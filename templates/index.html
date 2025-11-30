@@ -153,6 +153,15 @@
                        min="0" max="1" step="0.1" value="0" 
                        oninput="updateConfig('anesthetic', this.value); document.getElementById('anes-val').innerText = this.value">
 
+                <label class="text-xs text-zinc-400 flex justify-between mt-3">
+                  <span>Downsample (Brain JSON)</span> <span id="ds-val">1x</span>
+                </label>
+                <input
+                  type="range"
+                  class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-2"
+                  min="1" max="4" step="1" value="1"
+                  oninput="updateConfig('downsample', this.value); document.getElementById('ds-val').innerText = this.value + 'x'">
+
                 <div class="flex items-center gap-2 mt-4">
                     <input type="checkbox" id="chk-pip" checked class="accent-cyan-500">
                     <label for="chk-pip" class="text-xs text-zinc-400">Show Rat Vision (PiP)</label>
@@ -169,6 +178,22 @@
     let turboMode = false;
     let lastScore = 0;
     let lastGen = 1;
+
+    let turboBatch = 200;   // practical ceiling
+    let normalMaxSpeed = 10;
+
+    async function setTurboMode(on) {
+      turboMode = on;
+      const btn = document.getElementById('btn-turbo');
+      btn.innerText = turboMode ? "⚡ TRAINING..." : "⚡ Hyper-Train";
+
+      // backend clamps batch_size to max_speed, so lift the ceiling during turbo
+      await fetch('/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ max_speed: turboMode ? turboBatch : normalMaxSpeed })
+      });
+    }
     
     // --- THREE.JS SETUP ---
     const container = document.getElementById('three-container');
@@ -398,7 +423,7 @@
     async function loop() {
         if(!running) { requestAnimationFrame(loop); return; }
         try {
-            const payload = turboMode ? { batch_size: 500 } : {};
+            const payload = turboMode ? { batch_size: turboBatch } : {};
             const res = await fetch('/step', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
             const data = await res.json();
 
@@ -644,12 +669,26 @@
         updateGraph();
     }
     window.loadGen = async function() {
-        const id = document.getElementById('load-gen-input').value;
-        if(id) await fetch('/load_generation', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({generation: id}) });
-    }
+      const id = document.getElementById('load-gen-input').value;
+      if(!id) return;
+
+      const res = await fetch('/load_generation', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ generation: id })
+      });
+
+      const data = await res.json();
+      if (data.walls) buildWalls(data.walls);
+
+      clearMemories();
+      lastScore = 0;
+      lastGen = parseInt(id, 10) || lastGen;
+      updateGraph();
+    };
     window.updateConfig = async function(key, val) { await fetch('/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({[key]: parseFloat(val)}) }); }
     document.getElementById('btn-play').onclick = function() { running = !running; this.innerText = running ? "Pause" : "Resume"; };
-    document.getElementById('btn-turbo').onclick = function() { turboMode = !turboMode; this.innerText = turboMode ? "⚡ TRAINING..." : "⚡ Hyper-Train"; };
+    document.getElementById('btn-turbo').onclick = () => setTurboMode(!turboMode);
     
     resetRat();
     resizeThree();
