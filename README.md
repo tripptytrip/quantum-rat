@@ -16,9 +16,10 @@ This is an experiment in Biomimetic AI—building intelligence from the bottom u
 
 This simulation creates a "digital organism" that exhibits emergent behaviours we usually only see in real animals, without hard-coding them:
 
-1.  **The Zombie Effect:** You can administer simulated "Anaesthesia" (Isoflurane). This dampens the quantum dipole oscillations in the simulated microtubules. The rat keeps moving reflexively (zombie mode) but loses the ability to form complex plans or memories.
+1.  **Flashbulb Memories:** Instead of backpropagation, it uses Synaptic Tagging and Capture (STC). A single high-reward event (finding cheese) floods the system with proteins, instantly locking in the memory of the path taken.
+
 2.  **Cognitive Fatigue:** The rat has a metabolic engine. If it sprints or thinks too hard, its transporters (MCTs) physically cannot shuttle fuel fast enough. It will "bonk" and experience decision paralysis, even if it has energy reserves.
-3.  **Flashbulb Memories:** Instead of backpropagation, it uses Synaptic Tagging and Capture (STC). A single high-reward event (finding cheese) floods the system with proteins, instantly locking in the memory of the path taken.
+3.  **The Zombie Effect [EXPERIMENTAL]:** You can administer simulated "Anaesthesia" (Isoflurane). This dampens the quantum dipole oscillations in the simulated microtubules. The rat keeps moving reflexively (zombie mode) but loses the ability to form complex plans or memories.
 
 ## Under the Hood: The Architecture
 
@@ -75,5 +76,5 @@ This architecture is lightweight enough to run on edge hardware (Raspberry Pi / 
 
 ## Credits
 
-Concept & Engineering by [Your Name].
+Concept & Engineering by Michael A Kerr.
 Based on the theories of Penrose/Hameroff (Orch OR), Magistretti (ANLS), and O'Reilly (PBWM).
