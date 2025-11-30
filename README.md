@@ -1,22 +1,22 @@
 # The Quantum Rat v2.0: A Biophysical Brain Emulator
 
-> "What if AI wasn't just math, but biology? What if an agent learned not because of gradient descent, but because it was hungry?"
+> "What if AI wasn't just math, but biology? What if an agent learnt not because of gradient descent, but because it was hungry?"
 
 ![Quantum Rat Simulation](rat_looks_for_cheese.png)
 
 ## Overview
 
-Most modern AI (like Deep Learning) is Connectionist. It assumes infinite energy, perfect timing, and optimizes abstract weights to minimize error via backpropagation.
+Most modern AI (like Deep Learning) is Connectionist. It assumes infinite energy, perfect timing, and optimises abstract weights to minimise error via backpropagation.
 
 The Quantum Rat is different. It is a Biophysical Emulator. It simulates the physical constraints that real biological brains face: thermodynamics, energy bottlenecks, quantum coherence thresholds, and molecular decay.
 
-This is an experiment in Biomimetic AI—building intelligence from the bottom up, starting with the microtubule and ending with behavior.
+This is an experiment in Biomimetic AI—building intelligence from the bottom up, starting with the microtubule and ending with behaviour.
 
 ## Why is this interesting?
 
-This simulation creates a "digital organism" that exhibits emergent behaviors we usually only see in real animals, without hard-coding them:
+This simulation creates a "digital organism" that exhibits emergent behaviours we usually only see in real animals, without hard-coding them:
 
-1.  **The Zombie Effect:** You can administer simulated "Anesthesia" (Isoflurane). This dampens the quantum dipole oscillations in the simulated microtubules. The rat keeps moving reflexively (zombie mode) but loses the ability to form complex plans or memories.
+1.  **The Zombie Effect:** You can administer simulated "Anaesthesia" (Isoflurane). This dampens the quantum dipole oscillations in the simulated microtubules. The rat keeps moving reflexively (zombie mode) but loses the ability to form complex plans or memories.
 2.  **Cognitive Fatigue:** The rat has a metabolic engine. If it sprints or thinks too hard, its transporters (MCTs) physically cannot shuttle fuel fast enough. It will "bonk" and experience decision paralysis, even if it has energy reserves.
 3.  **Flashbulb Memories:** Instead of backpropagation, it uses Synaptic Tagging and Capture (STC). A single high-reward event (finding cheese) floods the system with proteins, instantly locking in the memory of the path taken.
 
@@ -26,7 +26,7 @@ The simulation runs on a custom Python physics backend (NumPy) with a real-time 
 
 ### 1. The Quantum Core (Orch OR)
 Instead of standard bits, the decision-making substrate is a cellular automaton running on a cylindrical hexagonal lattice. It mimics the quantum dipole interactions of tubulin proteins inside microtubules.
-* **Mechanism:** It evolves via a Schrodinger-like equation. When the system achieves high coherence (Superradiance), it "collapses" to a decision vector.
+* **Mechanism:** It evolves via a Schrödinger-like equation. When the system achieves high coherence (Superradiance), it "collapses" to a decision vector.
 
 ### 2. The Metabolic Engine (ANLS)
 Energy isn't just a number; it's a flow. We simulate the Astrocyte-Neuron Lactate Shuttle.
@@ -63,9 +63,9 @@ Combines Reinforcement Learning with working memory gating.
 
 ## Experiments to Try
 
-Once the simulation is running, manipulate the biophysics to see how behavior changes:
+Once the simulation is running, manipulate the biophysics to see how behaviour changes:
 
-* **The Anesthesia Test:** Slide "Anesthesia" to 1.0. Watch the Soma heatmap go dark. The rat will stop solving the maze and start wandering aimlessly.
+* **The Anaesthesia Test:** Slide "Anaesthesia" to 1.0. Watch the Soma heatmap go dark. The rat will stop solving the maze and start wandering aimlessly.
 * **Turbo Training:** Click "Hyper-Train". Watch the "Genetic Drifts" graph. You will see sudden spikes where the rat makes a discovery and the STC system locks it in.
 * **Starvation:** Let it run in Turbo mode until Glycogen (Purple Bar) drops significantly. Notice how the rat becomes sluggish and stops learning new paths due to the closed metabolic gate.
 
