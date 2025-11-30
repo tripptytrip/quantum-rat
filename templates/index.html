@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Quantum Rat v3.4: Place Cells</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.157.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.157.0/examples/jsm/"
+        }
+      }
+    </script>
+    <style>
+        body { background-color: #050505; color: #eee; font-family: monospace; }
+        #three-container { width: 100%; height: 100%; overflow: hidden; position: relative; }
+        canvas { outline: none; }
+        .btn { padding: 0.5rem 1rem; background-color: #1f2937; border: 1px solid #4b5563; border-radius: 0.375rem; color: inherit; cursor: pointer; transition: all 0.2s; }
+        .btn:hover { background-color: #374151; border-color: #6b7280; }
+        #pip-label { position: absolute; bottom: 10px; right: 10px; background: rgba(0,0,0,0.7); padding: 2px 5px; font-size: 10px; color: cyan; border: 1px solid #004444; pointer-events: none; z-index: 10; }
+        
+        /* Scanline effect for the Grid View */
+        .scanlines { background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.2) 50%, rgba(0,0,0,0.2)); background-size: 100% 4px; pointer-events: none; }
+    </style>
+</head>
+<body class="h-screen flex flex-col p-4 overflow-hidden bg-zinc-950">
+
+    <div class="flex justify-between items-center mb-4 border-b border-zinc-800 pb-2">
+        <div>
+            <h1 class="text-cyan-400 font-bold text-xl tracking-wider">QUANTUM RAT v3.4</h1>
+            <span class="text-xs text-cyan-700">Orch-OR Biomimetic Agent // Hebbian Plasticity</span>
+        </div>
+        <div class="flex gap-2 items-center">
+            <button id="btn-turbo" class="btn text-yellow-400 border-yellow-900/50 hover:border-yellow-500">⚡ Hyper-Train</button>
+            <div class="w-4 border-r border-zinc-800 h-6 mx-2"></div>
+            <input type="number" id="load-gen-input" placeholder="Gen ID" class="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 w-20 text-white focus:outline-none focus:border-cyan-500">
+            <button onclick="loadGen()" class="btn text-purple-300 border-purple-900/50 hover:border-purple-500">Time Travel</button>
+            <button id="btn-play" class="btn border-zinc-700">Pause</button>
+            <button onclick="resetRat()" class="btn text-red-400 border-red-900/50 hover:border-red-500">Wipe</button>
+        </div>
+    </div>
+
+    <div class="flex flex-1 gap-4 min-h-0">
+        <div class="flex-1 bg-black border border-cyan-900/30 rounded relative overflow-hidden shadow-[0_0_15px_rgba(0,255,255,0.1)]">
+            <div id="three-container"></div>
+            <div id="status-overlay" class="absolute top-4 left-4 text-cyan-500 text-sm font-bold pointer-events-none" style="text-shadow: 0 0 5px cyan;">AWAKE</div>
+            <div id="pip-label">SENSORY: VIBRISSAL (8Hz)</div>
+        </div>
+
+        <div class="w-96 flex flex-col gap-4 overflow-y-auto pr-2 custom-scrollbar">
+            <div class="flex flex-col gap-2">
+                <div class="flex gap-2">
+                    <div class="bg-zinc-900 p-2 rounded border border-zinc-800 flex-1 group relative">
+                         <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest">Soma (Decision)</h3>
+                        <canvas id="cvs-brain" width="64" height="13" class="w-full h-12 bg-black border border-zinc-800"></canvas>
+                        <div class="absolute bottom-full left-0 mb-2 w-full p-2 bg-zinc-800/95 border border-cyan-500/50 text-[10px] text-cyan-100 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 backdrop-blur-sm">
+                            <strong class="text-cyan-400 block mb-1">Substrate: Microtubules</strong>
+                            Visualizes quantum dipole oscillations. Bright spots indicate high coherence ($S_R$) leading to 'Orch OR' collapse events that drive motor decisions.
+                        </div>
+                    </div>
+
+                    <div class="bg-zinc-900 p-2 rounded border border-zinc-800 flex-1 group relative">
+                         <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest">Theta (Memory)</h3>
+                        <canvas id="cvs-mem" width="64" height="13" class="w-full h-12 bg-black border border-zinc-800"></canvas>
+                        <div class="absolute bottom-full left-0 mb-2 w-full p-2 bg-zinc-800/95 border border-purple-500/50 text-[10px] text-purple-100 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 backdrop-blur-sm">
+                            <strong class="text-purple-400 block mb-1">Substrate: Hippocampus</strong>
+                            Time-encoded lattice. Activity here represents Synaptic Tagging & Capture (STC), binding sequences of events for long-term consolidation.
+                        </div>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <div class="bg-zinc-900 p-2 rounded border border-zinc-800 relative flex-1 group">
+                         <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest">Entorhinal Grid</h3>
+                        <canvas id="cvs-grid" width="32" height="32" class="w-full h-24 bg-black border border-zinc-800 image-pixelated"></canvas>
+                        <div class="absolute inset-0 scanlines opacity-50"></div>
+                        <div class="absolute bottom-full left-0 mb-2 w-full p-2 bg-zinc-800/95 border border-green-500/50 text-[10px] text-green-100 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 backdrop-blur-sm">
+                            <strong class="text-green-400 block mb-1">Substrate: Entorhinal Cortex</strong>
+                            Hexagonal firing fields that provide a metric coordinate system for path integration and spatial mapping.
+                        </div>
+                    </div>
+                
+                    <div class="bg-zinc-900 p-2 rounded border border-zinc-800 relative w-24 flex flex-col items-center group">
+                         <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest text-center">HD Compass</h3>
+                        <canvas id="cvs-hd" width="64" height="64" class="w-20 h-20 bg-black border border-zinc-800 rounded-full"></canvas>
+                        <div class="absolute bottom-full right-0 mb-2 w-48 p-2 bg-zinc-800/95 border border-yellow-500/50 text-[10px] text-yellow-100 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 backdrop-blur-sm">
+                            <strong class="text-yellow-400 block mb-1">Substrate: Postsubiculum</strong>
+                            Ring attractor network maintaining Head Direction (HD) via vestibular integration.
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-zinc-900 p-4 rounded border border-zinc-800 space-y-3 relative overflow-hidden">
+                <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-cyan-900/50 to-transparent"></div>
+                
+                <div>
+                     <div class="flex justify-between text-xs mb-1"><span class="text-orange-500 font-semibold">FRUSTRATION</span><span id="val-frust" class="text-orange-300">0.00</span></div>
+                    <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-frust" class="h-full bg-gradient-to-r from-orange-600 to-orange-400 w-0 transition-all duration-200"></div></div>
+                </div>
+
+                 <div>
+                    <div class="flex justify-between text-xs mb-1 pt-1"><span class="text-blue-500 font-semibold">DOPAMINE</span><span id="val-dopa" class="text-blue-300">0.20</span></div>
+                   <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-dopa" class="h-full bg-gradient-to-r from-blue-600 to-blue-400 w-0 transition-all duration-200"></div></div>
+               </div>
+
+                <div class="pt-2 border-t border-zinc-800/50">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span class="text-purple-400 font-semibold">GLYCOGEN (Reserves)</span>
+                        <span id="val-energy" class="text-purple-300">100%</span>
+                    </div>
+                    <div class="h-2 bg-zinc-800 rounded overflow-hidden relative mb-2">
+                        <div id="bar-energy" class="h-full bg-purple-600 w-full transition-all duration-200"></div>
+                    </div>
+                
+                    <div class="flex justify-between text-xs mb-1">
+                        <span class="text-yellow-400 font-semibold">NEURONAL ATP (Flux)</span>
+                        <span id="val-atp" class="text-yellow-300">100%</span>
+                    </div>
+                    <div class="h-2 bg-zinc-800 rounded overflow-hidden relative">
+                        <div id="bar-atp" class="h-full bg-yellow-400 w-full transition-all duration-200 shadow-[0_0_10px_yellow]"></div>
+                    </div>
+                </div>
+
+               <div class="grid grid-cols-4 gap-2 pt-2 text-center">
+                    <div class="bg-zinc-950 p-2 rounded border border-zinc-800"><div class="text-[10px] text-zinc-500 uppercase">Score</div><div id="val-score" class="text-xl font-bold text-green-400">0</div></div>
+                    <div class="bg-zinc-950 p-2 rounded border border-zinc-800"><div class="text-[10px] text-zinc-500 uppercase">Gen</div><div id="val-gen" class="text-xl font-bold text-purple-400">1</div></div>
+                    <div class="bg-zinc-950 p-2 rounded border border-zinc-800"><div class="text-[10px] text-zinc-500 uppercase">Deaths</div><div id="val-deaths" class="text-xl font-bold text-red-400">0</div></div>
+                    <div class="bg-zinc-950 p-2 rounded border border-cyan-900/50"><div class="text-[10px] text-zinc-500 uppercase">Mems</div><div id="val-mems" class="text-xl font-bold text-blue-400">0</div></div>
+               </div>
+            </div>
+
+             <div class="bg-zinc-900 p-3 rounded border border-zinc-800 group relative">
+                <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest">Genetic Drifts</h3>
+                <canvas id="cvs-graph" width="300" height="80" class="w-full h-24 bg-zinc-950 border border-zinc-800/50 rounded"></canvas>
+                <div class="absolute bottom-full left-0 mb-2 w-full p-2 bg-zinc-800/95 border border-blue-500/50 text-[10px] text-blue-100 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 backdrop-blur-sm">
+                    <strong class="text-blue-400 block mb-1">Substrate: Basal Ganglia Weights</strong>
+                    Tracks the evolution of gating policies. <br>
+                    <span class="text-red-400">Red: Amygdala (Fear)</span><br>
+                    <span class="text-blue-400">Blue: Striatum (Greed)</span><br>
+                    <span class="text-green-400">Green: Hippocampus (Curiosity)</span>
+                </div>
+            </div>
+
+             <div class="bg-zinc-900 p-3 rounded border border-zinc-800">
+                 <label class="text-xs text-zinc-400 flex justify-between"><span>Simulation Speed</span> <span id="speed-val">1x</span></label>
+                <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-2" min="1" max="10" value="1" oninput="updateConfig('speed', this.value); document.getElementById('speed-val').innerText = this.value + 'x'">
+                
+                <label class="text-xs text-zinc-400 flex justify-between mt-2">
+                    <span>Anesthesia (Isoflurane)</span> <span id="anes-val">0.0</span>
+                </label>
+                <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-2" 
+                       min="0" max="1" step="0.1" value="0" 
+                       oninput="updateConfig('anesthetic', this.value); document.getElementById('anes-val').innerText = this.value">
+
+                <div class="flex items-center gap-2 mt-4">
+                    <input type="checkbox" id="chk-pip" checked class="accent-cyan-500">
+                    <label for="chk-pip" class="text-xs text-zinc-400">Show Rat Vision (PiP)</label>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    let running = true;
+    let turboMode = false;
+    let lastScore = 0;
+    let lastGen = 1;
+    
+    // --- THREE.JS SETUP ---
+    const container = document.getElementById('three-container');
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x000000, 0.02); 
+
+    const mainCamera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 1000);
+    mainCamera.position.set(20, 35, 55); 
+    
+    const ratCamera = new THREE.PerspectiveCamera(110, 4/3, 0.05, 50); 
+    
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setClearColor(0x050505);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    container.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(mainCamera, renderer.domElement);
+    controls.target.set(20, 0, 20);
+    controls.update();
+
+    const ambientLight = new THREE.AmbientLight(0x222222);
+    scene.add(ambientLight);
+
+    const sunLight = new THREE.DirectionalLight(0xffffff, 0.5);
+    sunLight.position.set(50, 50, -20);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.width = 2048; sunLight.shadow.mapSize.height = 2048;
+    scene.add(sunLight);
+
+    // --- MATERIALS ---
+    const matWall = new THREE.MeshLambertMaterial({ color: 0x111111, emissive: 0x004444, emissiveIntensity: 0.8 });
+    const matWallWire = new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.1 }); 
+    const matGround = new THREE.MeshPhongMaterial({ color: 0x080808, shininess: 80 });
+    const matRat = new THREE.MeshPhongMaterial({ color: 0x00ffff, emissive: 0x0088ff, emissiveIntensity: 0.5 });
+    const matPredator = new THREE.MeshPhongMaterial({ color: 0xff00ff, emissive: 0x550055, emissiveIntensity: 0.8 });
+    const matTarget = new THREE.MeshPhongMaterial({ color: 0xffd700, emissive: 0xffaa00, emissiveIntensity: 0.8 });
+    const matPheromone = new THREE.MeshBasicMaterial({ color: 0x00ff66 });
+    const matPhantom = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.2, wireframe: true });
+    // NEW: Memory Material (Holographic Blue)
+    const matMemory = new THREE.MeshBasicMaterial({ color: 0x0088ff, wireframe: true, transparent: true, opacity: 0.6 });
+    const matVisionCone = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.05, side: THREE.DoubleSide });
+
+    let wallsInstancedMesh, wireframeBox;
+    let ratMesh, predatorMesh, targetMeshes, targetLights;
+    let pheromoneMeshes = [], phantomMeshes = [];
+    // NEW: Store memory objects
+    let memoryObjects = [];
+    let leftWhisker, rightWhisker;
+    let visionGroup;
+    const visionLines = [];
+    const MAP_SIZE = 40;
+
+    function initSceneObjects() {
+        const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE), matGround);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.set(MAP_SIZE / 2 - 0.5, 0, MAP_SIZE / 2 - 0.5);
+        ground.receiveShadow = true;
+        scene.add(ground);
+        
+        const gridHelper = new THREE.GridHelper(MAP_SIZE, MAP_SIZE, 0x003333, 0x001111);
+        gridHelper.position.set(MAP_SIZE / 2 - 0.5, 0.01, MAP_SIZE / 2 - 0.5);
+        scene.add(gridHelper);
+
+        ratMesh = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1, 8), matRat);
+        ratMesh.castShadow = true; 
+        
+        ratMesh.add(ratCamera);
+        ratCamera.position.set(0, 0.2, 0.2); 
+        ratCamera.rotation.x = -Math.PI / 2; 
+        
+        const visionGeo = new THREE.ConeGeometry(4, 8, 32, 1, true, 0, 1.9); 
+        const visionCone = new THREE.Mesh(visionGeo, matVisionCone);
+        visionCone.position.y = 4; visionCone.rotation.x = Math.PI; 
+        ratMesh.add(visionCone);
+        
+        scene.add(ratMesh);
+
+        predatorMesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.5, 0), matPredator);
+        predatorMesh.castShadow = true; scene.add(predatorMesh);
+
+        targetMeshes = [];
+        targetLights = [];
+        for(let i = 0; i < 3; i++) { // Initialize 3 target meshes and lights
+            const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 16), matTarget);
+            const light = new THREE.PointLight(0xffaa00, 1, 10);
+            mesh.add(light);
+            scene.add(mesh);
+            targetMeshes.push(mesh);
+            targetLights.push(light);
+        }
+
+        for(let i=0; i<500; i++) {
+            const pMesh = new THREE.Mesh(new THREE.SphereGeometry(0.1, 4, 4), matPheromone);
+            pMesh.visible = false; scene.add(pMesh); pheromoneMeshes.push(pMesh);
+        }
+        for(let i=0; i<15; i++) {
+            const phMesh = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1, 4), matPhantom);
+            phMesh.visible = false; scene.add(phMesh); phantomMeshes.push(phMesh);
+        }
+
+    // --- NEW: VIBRISSAE SETUP ---
+    // Create Geometry for whiskers (lines)
+    const whiskerMat = new THREE.LineBasicMaterial({ color: 0xaaaaaa });
+    const geometry = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, 4) // Length 4
+    ]);
+
+    leftWhisker = new THREE.Line(geometry, whiskerMat.clone());
+    leftWhisker.position.set(-0.2, 0, 0.5); // Offset from nose
+    ratMesh.add(leftWhisker);
+
+    rightWhisker = new THREE.Line(geometry, whiskerMat.clone());
+    rightWhisker.position.set(0.2, 0, 0.5);
+    ratMesh.add(rightWhisker);
+
+    // --- NEW: RETINAL RAYS ---
+    visionGroup = new THREE.Group();
+    ratMesh.add(visionGroup);
+    const lineMat = new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.5 });
+    for(let i=0; i<12; i++) {
+        const geo = new THREE.BufferGeometry().setFromPoints([ new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,1) ]);
+        const line = new THREE.Line(geo, lineMat.clone());
+        visionLines.push(line);
+        visionGroup.add(line);
+    }
+    }
+
+    function buildWalls(walls) {
+        if(wallsInstancedMesh) { scene.remove(wallsInstancedMesh); scene.remove(wireframeBox); }
+        
+        const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+        const edges = new THREE.EdgesGeometry(boxGeo);
+
+        wallsInstancedMesh = new THREE.InstancedMesh(boxGeo, matWall, walls.length);
+        wallsInstancedMesh.castShadow = true; wallsInstancedMesh.receiveShadow = true;
+
+        const dummy = new THREE.Object3D();
+        walls.forEach((w, i) => {
+            dummy.position.set(w[0], 0.5, w[1]); dummy.updateMatrix();
+            wallsInstancedMesh.setMatrixAt(i, dummy.matrix);
+        });
+        wallsInstancedMesh.instanceMatrix.needsUpdate = true;
+        scene.add(wallsInstancedMesh);
+        
+        wireframeBox = new THREE.InstancedMesh(edges, matWallWire, walls.length);
+        walls.forEach((w, i) => {
+             dummy.position.set(w[0], 0.5, w[1]); dummy.updateMatrix();
+             wireframeBox.setMatrixAt(i, dummy.matrix);
+        });
+        wireframeBox.instanceMatrix.needsUpdate = true;
+        scene.add(wireframeBox);
+    }
+    
+    // NEW: Function to spawn a Memory Marker
+    function spawnMemoryMarker(pos) {
+        const geo = new THREE.OctahedronGeometry(0.4, 0);
+        const mesh = new THREE.Mesh(geo, matMemory);
+        mesh.position.set(pos.x, 1.0, pos.z); // Float higher than rat
+        scene.add(mesh);
+        memoryObjects.push(mesh);
+    }
+    
+    function clearMemories() {
+        memoryObjects.forEach(m => scene.remove(m));
+        memoryObjects = [];
+    }
+
+    initSceneObjects();
+
+    // --- CANVAS DIAGNOSTICS ---
+    const ctxBrain = document.getElementById('cvs-brain').getContext('2d');
+    const ctxMem = document.getElementById('cvs-mem').getContext('2d');
+    const ctxGrid = document.getElementById('cvs-grid').getContext('2d');
+    const ctxHD = document.getElementById('cvs-hd').getContext('2d');
+    const cvsGraph = document.getElementById('cvs-graph');
+    const ctxGraph = cvsGraph.getContext('2d');
+
+    function resizeThree() {
+        const w = container.clientWidth, h = container.clientHeight;
+        mainCamera.aspect = w / h; mainCamera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+    }
+    window.onresize = resizeThree;
+
+    function drawHeatmap(ctx, data, colorFn) {
+        if(!data || !data.length) return;
+        const w = data[0].length, h = data.length;
+        if(ctx.canvas.width !== w) { ctx.canvas.width = w; ctx.canvas.height = h; }
+        
+        const img = ctx.createImageData(w, h);
+        for(let i=0; i<h; i++) {
+            for(let j=0; j<w; j++) {
+                const val = data[i][j]; const idx = (i*w + j) * 4; const rgb = colorFn(val);
+                img.data[idx] = rgb[0]; img.data[idx+1] = rgb[1]; img.data[idx+2] = rgb[2]; img.data[idx+3] = 255;
+            }
+        }
+        ctx.putImageData(img, 0, 0);
+    }
+
+    async function updateGraph() {
+        const res = await fetch('/history'); const data = await res.json();
+        if(!data.length) return;
+        const w = cvsGraph.width; const h = cvsGraph.height;
+        ctxGraph.clearRect(0, 0, w, h);
+        ctxGraph.strokeStyle = '#222'; ctxGraph.lineWidth = 1;
+        ctxGraph.beginPath(); ctxGraph.moveTo(0, h/2); ctxGraph.lineTo(w, h/2); ctxGraph.stroke();
+        const mapY = (val) => h - ((val / 10.0) * h);
+        const stepX = w / Math.max(10, data.length);
+        const drawLine = (key, color) => {
+            ctxGraph.strokeStyle = color; ctxGraph.lineWidth = 2; ctxGraph.beginPath();
+            data.forEach((pt, i) => {
+                const x = i * stepX; const y = mapY(parseFloat(pt[key]));
+                if(i===0) ctxGraph.moveTo(x, y); else ctxGraph.lineTo(x, y);
+            });
+            ctxGraph.stroke();
+        };
+        drawLine('Amygdala', '#f87171'); drawLine('Striatum', '#60a5fa'); drawLine('Hippocampus', '#34d399');
+    }
+
+    // --- LOOP ---
+    let lastRatPos = new THREE.Vector3();
+    const pipCheck = document.getElementById('chk-pip');
+    
+    async function loop() {
+        if(!running) { requestAnimationFrame(loop); return; }
+        try {
+            const payload = turboMode ? { batch_size: 500 } : {};
+            const res = await fetch('/step', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+            const data = await res.json();
+
+            const newRatPos = new THREE.Vector3(data.rat[0], 0.5, data.rat[1]);
+            ratMesh.position.copy(newRatPos);
+            
+            const moveDir = new THREE.Vector3().subVectors(newRatPos, lastRatPos);
+            if (moveDir.lengthSq() > 0.001) {
+                 const angle = Math.atan2(moveDir.z, moveDir.x);
+                 ratMesh.rotation.set(Math.PI/2, 0, angle - Math.PI/2);
+                 const bob = Math.sin(performance.now() / 100) * 0.05;
+                 ratCamera.position.y = 0.2 + bob;
+            }
+            lastRatPos.copy(newRatPos);
+
+            if(data.predator) {
+                predatorMesh.position.set(data.predator[0], 0.5, data.predator[1]);
+                predatorMesh.rotation.x += 0.05; predatorMesh.rotation.y += 0.05;
+            }
+            if(data.targets) {
+                data.targets.forEach((target_pos, index) => {
+                    if (targetMeshes[index]) {
+                        targetMeshes[index].position.set(target_pos[0], 0.5, target_pos[1]);
+                        targetLights[index].intensity = 1.0 + Math.sin(performance.now() / 200 + index * 0.5) * 0.5;
+                    }
+                });
+            }
+
+            pheromoneMeshes.forEach(m => m.visible = false);
+            if(data.pheromones) {
+                data.pheromones.slice(-500).forEach((pt, i) => {
+                    const pm = pheromoneMeshes[i];
+                    if(pm) { pm.visible = true; pm.position.set(pt[0], 0.1, pt[1]); }
+                });
+            }
+
+            phantomMeshes.forEach(m => m.visible = false);
+            if(data.phantom) {
+                data.phantom.forEach((pt, i) => {
+                    const ph = phantomMeshes[i];
+                    if(ph) {
+                        ph.visible = true; ph.position.set(pt[0], 0.5, pt[1]);
+                        if(i > 0) {
+                            const prev = data.phantom[i-1];
+                            const angle = Math.atan2(pt[1]-prev[1], pt[0]-prev[0]);
+                             ph.rotation.set(Math.PI/2, 0, angle - Math.PI/2);
+                        }
+                    }
+                });
+            }
+
+            if (data.whiskers) {
+                // 1. Sync Rotation (Base angle +/- oscillation)
+                // Left starts at +45deg (0.78 rad), adds oscillation
+                leftWhisker.rotation.y = 0.78 + data.whiskers.angle;
+                
+                // Right starts at -45deg (-0.78 rad), subtracts oscillation (mirror)
+                rightWhisker.rotation.y = -0.78 - data.whiskers.angle;
+
+                // 2. Visual Feedback on Touch (Color Change)
+                // Left Hit?
+                leftWhisker.material.color.setHex(data.whiskers.hits[0] ? 0xff0000 : 0xaaaaaa);
+                leftWhisker.material.linewidth = data.whiskers.hits[0] ? 3 : 1;
+                
+                // Right Hit?
+                rightWhisker.material.color.setHex(data.whiskers.hits[1] ? 0xff0000 : 0xaaaaaa);
+                rightWhisker.material.linewidth = data.whiskers.hits[1] ? 3 : 1;
+            }
+
+            if(data.vision && data.vision.length > 0) {
+                const ratAngle = ratMesh.rotation.z + Math.PI/2;
+                visionLines.forEach((line, i) => {
+                    const ray = data.vision[i];
+                    if(ray) {
+                        line.visible = true;
+                        line.rotation.y = ray.angle - ratAngle;
+                        line.scale.z = ray.dist;
+                        
+                        let color = 0x00ffff; // Cyan for wall
+                        if(ray.type === 0) color = 0x444444; // Grey for empty
+                        if(ray.type === 2) color = 0xff0000; // Red for predator
+                        if(ray.type === 3) color = 0xffff00; // Yellow for target
+                        line.material.color.setHex(color);
+                        line.material.opacity = ray.type === 0 ? 0.1 : 0.5;
+                    } else {
+                        line.visible = false;
+                    }
+                });
+            }
+            
+            // NEW: MEMORY VISUALIZATION LOGIC
+            const currentGen = data.stats.generation;
+            if (currentGen > lastGen) {
+                clearMemories(); // New generation, clear short-term memories
+                lastGen = currentGen;
+                lastScore = 0;
+            }
+            
+            const currentScore = data.stats.score;
+            if (currentScore > lastScore) {
+                // Score increased -> Memory Formed at CURRENT location
+                spawnMemoryMarker(newRatPos);
+                lastScore = currentScore;
+            }
+            
+            // Rotate Memory Markers
+            memoryObjects.forEach(m => {
+                m.rotation.y += 0.02;
+                m.rotation.x += 0.01;
+            });
+
+            const stats = data.stats;
+            document.getElementById('val-frust').innerText = stats.frustration.toFixed(2);
+            document.getElementById('bar-frust').style.width = (stats.frustration*100) + '%';
+            if(stats && stats.dopamine !== undefined) {
+                document.getElementById('val-dopa').innerText = stats.dopamine.toFixed(2);
+                document.getElementById('bar-dopa').style.width = (stats.dopamine*100) + '%';
+                
+                // Update Glycogen
+                document.getElementById('val-energy').innerText = Math.round(stats.energy * 100) + '%';
+                document.getElementById('bar-energy').style.width = (stats.energy * 100) + '%';
+                
+                // Update ATP
+                const atpVal = stats.atp || 0; // Default to 0 if undefined
+                // ATP can go > 1.0 due to mitochondrial efficiency boost
+                const atpPercent = Math.min(100, Math.round(atpVal * 100)); 
+                document.getElementById('val-atp').innerText = atpPercent + '%';
+                document.getElementById('bar-atp').style.width = atpPercent + '%';
+                
+                // Visual Glitch effect if ATP is low (Consciousness fading)
+                if (atpVal < 0.3) {
+                    document.body.style.filter = "grayscale(100%) blur(2px)";
+                } else {
+                    document.body.style.filter = "none";
+                }
+
+                document.getElementById('val-deaths').innerText = stats.deaths || 0;
+                document.getElementById('val-gen').innerText = stats.generation || 1;
+                document.getElementById('val-score').innerText = stats.score;
+                // Update Memory Count
+                document.getElementById('val-mems').innerText = memoryObjects.length;
+            }
+
+            const statusEl = document.getElementById('status-overlay');
+            statusEl.innerText = stats.status;
+            statusEl.className = stats.status === "DREAMING" ? "absolute top-4 left-4 text-xl font-bold animate-pulse text-cyan-300 pointer-events-none" : "absolute top-4 left-4 text-sm font-bold text-cyan-700 pointer-events-none";
+
+            // Draw Brain Heatmaps
+            drawHeatmap(ctxBrain, data.brain.soma, v => { const b = Math.min(255, v * 500); return [b, b*0.2, b*0.1]; });
+            if(data.brain.theta) drawHeatmap(ctxMem, data.brain.theta, v => { const b = Math.min(255, v * 50); return [b*0.8, 0, b]; });
+            
+            // --- DRAW HEAD DIRECTION RING ---
+            if (data.brain.hd) {
+                const w = ctxHD.canvas.width;
+                const h = ctxHD.canvas.height;
+                const cx = w / 2;
+                const cy = h / 2;
+                const radius = w / 2 - 2;
+
+                ctxHD.clearRect(0, 0, w, h);
+                
+                // 1. Draw Ring Background
+                ctxHD.strokeStyle = '#222';
+                ctxHD.lineWidth = 2;
+                ctxHD.beginPath();
+                ctxHD.arc(cx, cy, radius * 0.7, 0, Math.PI * 2);
+                ctxHD.stroke();
+
+                // 2. Draw Activity Bump (The Neural Compass)
+                // The data is a list of 36 floats representing neuron firing rates
+                const cells = data.brain.hd;
+                const step = (Math.PI * 2) / cells.length;
+
+                ctxHD.beginPath();
+                for (let i = 0; i < cells.length; i++) {
+                    const activity = cells[i]; // 0.0 to 1.0
+                    if (activity < 0.01) continue;
+
+                    // Angle needs to be offset by -PI/2 to put index 0 at the top (North)
+                    const angle = i * step - (Math.PI / 2); 
+                    
+                    // Calculate magnitude of the spoke
+                    const mag = (radius * 0.5) + (activity * radius * 0.5);
+                    
+                    const px = cx + Math.cos(angle) * mag;
+                    const py = cy + Math.sin(angle) * mag;
+
+                    // Draw line from inner ring to activity edge
+                    const ix = cx + Math.cos(angle) * (radius * 0.5);
+                    const iy = cy + Math.sin(angle) * (radius * 0.5);
+
+                    ctxHD.moveTo(ix, iy);
+                    ctxHD.lineTo(px, py);
+                }
+                // Color correlates to orientation (Science!)
+                ctxHD.strokeStyle = '#00ff00'; // Green phosphor look
+                ctxHD.lineWidth = 2;
+                ctxHD.stroke();
+
+                // 3. Draw Actual Head Heading (Visual Truth) for comparison
+                // We can infer this from the max activity or pass it in data.rat_heading if available
+                // For now, let's just trust the ring activity to visualize the brain state.
+            }
+
+            // Draw Grid Cells (Green/Yellow scale)
+            if(data.brain.grid) drawHeatmap(ctxGrid, data.brain.grid, v => { 
+                const g = Math.min(255, v * 255); 
+                return [g*0.2, g, 0]; 
+            });
+
+            if(data.reset_visuals) updateGraph();
+
+        } catch(e) { console.error(e); }
+
+        const w = container.clientWidth;
+        const h = container.clientHeight;
+
+        renderer.setViewport(0, 0, w, h);
+        renderer.setScissor(0, 0, w, h);
+        renderer.setScissorTest(true);
+        renderer.render(scene, mainCamera);
+
+        if(pipCheck.checked) {
+            const pipW = 320; 
+            const pipH = 240;
+            const pad = 10;
+            renderer.setViewport(w - pipW - pad, pad, pipW, pipH);
+            renderer.setScissor(w - pipW - pad, pad, pipW, pipH);
+            renderer.setScissorTest(true);
+            renderer.render(scene, ratCamera);
+        }
+        
+        renderer.setScissorTest(false);
+        requestAnimationFrame(loop);
+    }
+
+    window.resetRat = async function() {
+        const res = await fetch('/reset', {method:'POST'});
+        const data = await res.json();
+        if(data.walls) buildWalls(data.walls);
+        clearMemories(); // Clear on reset
+        lastScore = 0;
+        updateGraph();
+    }
+    window.loadGen = async function() {
+        const id = document.getElementById('load-gen-input').value;
+        if(id) await fetch('/load_generation', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({generation: id}) });
+    }
+    window.updateConfig = async function(key, val) { await fetch('/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({[key]: parseFloat(val)}) }); }
+    document.getElementById('btn-play').onclick = function() { running = !running; this.innerText = running ? "Pause" : "Resume"; };
+    document.getElementById('btn-turbo').onclick = function() { turboMode = !turboMode; this.innerText = turboMode ? "⚡ TRAINING..." : "⚡ Hyper-Train"; };
+    
+    resetRat();
+    resizeThree();
+    loop();
+</script>
+</body>
+</html>
