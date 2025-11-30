@@ -26,7 +26,7 @@ This simulation creates a "digital organism" that exhibits emergent behaviours w
 The simulation runs on a custom Python physics backend (NumPy) with a real-time WebGL frontend (Three.js).
 
 ### 1. The Quantum Core (Orch OR)
-Instead of standard bits, the decision-making substrate is a cellular automaton running on a cylindrical hexagonal lattice. It mimics the quantum dipole interactions of tubulin proteins inside microtubules.
+Instead of standard bits, the decision-making substrate is a cellular automaton running on a cylindrical hexagonal lattice. It emulates the potential quantum dipole interactions of tubulin proteins inside microtubules.
 * **Mechanism:** It evolves via a Schrödinger-like equation. When the system achieves high coherence (Superradiance), it "collapses" to a decision vector.
 
 ### 2. The Metabolic Engine (ANLS)
