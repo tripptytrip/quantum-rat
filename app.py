@@ -587,6 +587,7 @@ class HippocampalReplay:
         frustration: float,
         reward_signal: float,
         danger_level: float,
+        near_death: bool = False,
     ):
         self.buffer.push(
             {
@@ -596,6 +597,7 @@ class HippocampalReplay:
                 "fr": float(frustration),
                 "r": float(reward_signal),
                 "danger": float(danger_level),
+                "near_death": bool(near_death),
             }
         )
 
@@ -612,15 +614,22 @@ class HippocampalReplay:
             if random.random() < bridge_prob:
                 b = self.buffer.sample_older()
 
+            base_salience_a = abs(a["r"]) + a["danger"] + 0.25 * a["fr"]
+            if a.get("near_death", False):
+                base_salience_a *= 1.5
+
             if b is None:
                 sens = np.array(a["sens"], dtype=float)
                 mem = np.array(a["mem"], dtype=float)
-                salience = abs(a["r"]) + a["danger"] + 0.25 * a["fr"]
+                salience = base_salience_a
                 pos = a["pos"]
             else:
+                base_salience_b = abs(b["r"]) + b["danger"] + 0.25 * b["fr"]
+                if b.get("near_death", False):
+                    base_salience_b *= 1.5
                 sens = 0.6 * np.array(a["sens"], dtype=float) + 0.4 * np.array(b["sens"], dtype=float)
                 mem = 0.6 * np.array(a["mem"], dtype=float) + 0.4 * np.array(b["mem"], dtype=float)
-                salience = (abs(a["r"]) + a["danger"] + 0.25 * a["fr"] + abs(b["r"]) + b["danger"] + 0.25 * b["fr"]) * 0.5
+                salience = 0.5 * (base_salience_a + base_salience_b)
                 pos = a["pos"]
 
             out.append({"sens": sens, "mem": mem, "salience": float(salience), "pos": pos})
@@ -746,6 +755,7 @@ class DendriticCluster:
         reward_signal,
         danger_level,
         replay_len: int,
+        near_death: bool = False,
     ):
         self.replay.set_capacity(replay_len)
         self.replay.record(
@@ -755,9 +765,10 @@ class DendriticCluster:
             frustration=frustration,
             reward_signal=reward_signal,
             danger_level=danger_level,
+            near_death=near_death,
         )
 
-    def offline_replay_and_consolidate(self, steps: int, bridge_prob: float, strength: float):
+    def offline_replay_and_consolidate(self, steps: int, bridge_prob: float, strength: float, stress_learning_gain: float = 0.5):
         """
         Apply replay to existing STC→BG consolidation path.
         This should be *small* and *bounded* to avoid destabilising online policy.
@@ -775,7 +786,8 @@ class DendriticCluster:
             consolidation_vec = self.update_stc(activity_proxy, prp_like)
 
             if float(np.max(consolidation_vec)) > 0.1:
-                self.basal_ganglia.w_gate += (0.001 * strength) * consolidation_vec
+                scale = 1.0 + stress_learning_gain * clamp(float(it["salience"]), 0.0, 2.0)
+                self.basal_ganglia.w_gate += (0.001 * strength * scale) * consolidation_vec
                 self.basal_ganglia.w_gate = np.clip(self.basal_ganglia.w_gate, -1.0, 1.0)
 
     def process_votes(
@@ -801,6 +813,10 @@ class DendriticCluster:
         enable_thalamus=False,
         extra_arousal=0.0,
         rat_pos=None,
+        panic: float = 0.0,
+        cortisol: float = 0.0,
+        near_death: bool = False,
+        panic_trn_gain: float = 0.5,
     ):
         # ---- Apply genome weights so evolution actually matters ----
         w_amyg = clamp(self.weights.get("amygdala", 1.0), 0.1, 10.0)
@@ -866,17 +882,23 @@ class DendriticCluster:
             danger=float(danger_level),
         )
 
-        arousal = (dopamine * 0.5) + (frustration * 0.5) + extra_arousal + lc_out["arousal_boost"]
+        arousal = (dopamine * 0.5) + (frustration * 0.5) + extra_arousal + lc_out["arousal_boost"] + (0.3 * panic)
         if atp_availability < 0.2:
             arousal = 0.0
 
         amygdala_drive = float(danger_level) * w_amyg * fear_gain
+        amygdala_drive *= (1.0 + 0.2 * panic)
         pfc_drive = float(frustration) * w_hip
 
         trn_modes = self.trn.step(arousal, amygdala_drive, pfc_drive)
 
         gain_sensory = 1.0 if trn_modes[0] == "TONIC" else 0.05
         gain_memory = 1.0 if trn_modes[1] == "TONIC" else 0.05
+
+        gain_sensory *= (1.0 - panic_trn_gain * min(panic, 1.0) * 0.2)
+        gain_memory *= (1.0 - panic_trn_gain * min(panic, 1.0) * 0.1)
+        gain_sensory = max(0.05, gain_sensory)
+        gain_memory = max(0.05, gain_memory)
 
         sensory_vec_old_gated = sensory_vec_old_raw * gain_sensory
         sensory_vec_new_gated = np.array([0.0, 0.0])
@@ -937,6 +959,7 @@ class DendriticCluster:
                 reward_signal=reward_signal,
                 danger_level=danger_level,
                 replay_len=240,
+                near_death=near_death,
             )
 
         return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp, pain, touch
@@ -1005,7 +1028,9 @@ class SimulationState:
         self.pheromones: List[List[float]] = []
 
         self.dream_timer = 0
-        self.panic = 0
+        self.panic = 0.0
+        self.cortisol = 0.0
+        self.behaviour_mode = "SAFE"
 
         # Add config defaults + helpful knobs
         self.config = {
@@ -1028,6 +1053,13 @@ class SimulationState:
             "replay_len": 240,          # ring buffer capacity (snapshots)
             "replay_strength": 0.15,    # how much replay affects consolidation
             "replay_bridge_prob": 0.25, # chance to mix in an older memory
+            # --- NEW STRESS SYSTEM KNOBS ---
+            "panic_gain": 1.0,
+            "cortisol_gain": 0.5,
+            "cortisol_decay": 0.005,
+            "panic_trn_gain": 0.5,
+            "panic_motor_bias": 0.5,
+            "stress_learning_gain": 0.5,
         }
 
         self.generation = 1
@@ -1281,6 +1313,8 @@ class SimulationState:
         self.pheromones = []
         self.frustration = 0.0
         self.panic = 0.0
+        self.cortisol = 0.0
+        self.behaviour_mode = "SAFE"
 
         # reset short-term state
         self.brain.astrocyte = Astrocyte()
@@ -1455,6 +1489,9 @@ def step():
                             "frustration": 0,
                             "score": sim.score,
                             "status": "DEAD",
+                            "panic": float(sim.panic),
+                            "cortisol": float(sim.cortisol),
+                            "mode": sim.behaviour_mode,
                             "energy": 0,
                             "atp": 0,
                             "deaths": sim.deaths,
@@ -1482,11 +1519,43 @@ def step():
             sim.brain.update_hd_cells(angular_velocity)
             head_direction = sim.brain.get_head_direction()
 
+            danger_level = 0.0
+            if dist_cat < 10.0:
+                danger_level = 1.0 - (dist_cat / 10.0)
+
+            near_death = dist_cat < 2.0
+
+            # --- NEW: LC / Panic computation ---
+            panic_gain = float(sim.config.get("panic_gain", 1.0))
+            atp = float(sim.brain.astrocyte.neuronal_atp)
+            atp_factor = 1.0 - clamp(atp / 1.0, 0.0, 1.0)
+            panic_input = clamp(danger_level * (1.0 + atp_factor), 0.0, 2.0)
+            sim.panic = sim.panic * 0.9 + panic_input * 0.1
+            panic_signal = sim.panic * panic_gain
+
+            # --- NEW: Cortisol update (slow stress hormone) ---
+            cort_gain = float(sim.config.get("cortisol_gain", 0.5))
+            cort_decay = float(sim.config.get("cortisol_decay", 0.005))
+            sim.cortisol += cort_gain * panic_input * 0.01
+            sim.cortisol -= cort_decay
+            sim.cortisol = clamp(sim.cortisol, 0.0, 2.0)
+
+            # --- NEW: Behavioural mode classification ---
+            if panic_signal < 0.2 and danger_level < 0.2:
+                sim.behaviour_mode = "SAFE"
+            elif panic_signal < 0.7 and danger_level < 0.8:
+                sim.behaviour_mode = "ALERT"
+            else:
+                sim.behaviour_mode = "PANIC"
+            if sim.cortisol > 0.5 and sim.behaviour_mode == "SAFE":
+                sim.behaviour_mode = "ALERT"
+
             trn_modes = sim.brain.trn.modes
 
             # If both in burst: return microsleep on final iteration
             if trn_modes[0] == "BURST" and trn_modes[1] == "BURST":
                 if i == iterations - 1:
+                    panic_trn_gain_ms = float(sim.config.get("panic_trn_gain", 0.5))
                     soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _ = sim.brain.process_votes(
                         sim.frustration,
                         sim.dopamine,
@@ -1499,6 +1568,10 @@ def step():
                         anesthetic_level=anesthetic_level,
                         extra_arousal=arousal_from_touch,
                         rat_pos=sim.rat_pos,
+                        panic=panic_signal,
+                        cortisol=sim.cortisol,
+                        near_death=near_death,
+                        panic_trn_gain=panic_trn_gain_ms,
                     )
                     # --- OFFLINE HIPPOCAMPAL REPLAY ---
                     if float(sim.config.get("enable_replay", 0.0)) > 0.5:
@@ -1507,6 +1580,7 @@ def step():
                             steps=int(sim.config.get("replay_steps", 6)),
                             bridge_prob=float(sim.config.get("replay_bridge_prob", 0.25)),
                             strength=float(sim.config.get("replay_strength", 0.15)),
+                            stress_learning_gain=float(sim.config.get("stress_learning_gain", 0.5)),
                         )
                         sim.phantom_trace = sim.brain.replay.last_replay_trace[-200:]
                     return jsonify(
@@ -1527,6 +1601,9 @@ def step():
                                 "serotonin": sim.serotonin,
                                 "norepinephrine": float(sim.brain.lc.tonic_ne),
                                 "ne_phasic": float(sim.brain.lc.phasic_ne),
+                                "panic": float(panic_signal),
+                                "cortisol": float(sim.cortisol),
+                                "mode": sim.behaviour_mode,
                                 "energy": float(glycogen_level),
                                 "atp": float(atp_level),
                                 "deaths": sim.deaths,
@@ -1539,10 +1616,6 @@ def step():
                         }
                     )
                 continue
-
-            danger_level = 0.0
-            if dist_cat < 10.0:
-                danger_level = 1.0 - (dist_cat / 10.0)
 
             reward_signal = 0.0
             for idx, target_pos in enumerate(sim.targets):
@@ -1562,6 +1635,9 @@ def step():
             memory_gain = float(sim.config.get("memory_gain", 1.0))
             fear_gain = float(sim.config.get("fear_gain", 1.0))
             use_energy = float(sim.config.get("energy_constraint", 1.0)) > 0.5
+            panic_trn_gain = float(sim.config.get("panic_trn_gain", 0.5))
+            panic_motor_bias = float(sim.config.get("panic_motor_bias", 0.5))
+            stress_learning_gain = float(sim.config.get("stress_learning_gain", 0.5))
             
             collision_flag = sim.last_collision
 
@@ -1590,8 +1666,21 @@ def step():
                 enable_thalamus=enable_thalamus,
                 extra_arousal=arousal_from_touch,
                 rat_pos=sim.rat_pos,
+                panic=panic_signal,
+                cortisol=sim.cortisol,
+                near_death=near_death,
+                panic_trn_gain=panic_trn_gain,
             )
             sim.last_touch = touch # Update for next step
+
+            if panic_signal > 0.05 and panic_motor_bias > 0.0:
+                diff = sim.rat_pos - sim.predator.pos
+                dist = float(np.linalg.norm(diff))
+                if dist > 1e-6:
+                    flee_dir = diff / dist
+                    panic_scale = clamp(panic_signal, 0.0, 1.0)
+                    flee_boost = flee_dir * (0.1 * panic_motor_bias * panic_scale)
+                    final_decision = final_decision + flee_boost
 
             sim.cerebellum.predict(sim.rat_pos, final_decision)
             
@@ -1676,6 +1765,9 @@ def step():
                     "serotonin": sim.serotonin,
                     "norepinephrine": float(sim.brain.lc.tonic_ne),
                     "ne_phasic": float(sim.brain.lc.phasic_ne),
+                    "panic": float(panic_signal),
+                    "cortisol": float(sim.cortisol),
+                    "mode": sim.behaviour_mode,
                     "energy": float(glycogen_level),
                     "atp": float(atp_level),
                     "deaths": sim.deaths,
@@ -1817,6 +1909,18 @@ def config():
             sim.config["replay_strength"] = clamp(float(payload["replay_strength"]), 0.0, 2.0)
         if "replay_bridge_prob" in payload:
             sim.config["replay_bridge_prob"] = clamp(float(payload["replay_bridge_prob"]), 0.0, 1.0)
+        if "panic_gain" in payload:
+            sim.config["panic_gain"] = clamp(float(payload["panic_gain"]), 0.0, 5.0)
+        if "cortisol_gain" in payload:
+            sim.config["cortisol_gain"] = clamp(float(payload["cortisol_gain"]), 0.0, 5.0)
+        if "cortisol_decay" in payload:
+            sim.config["cortisol_decay"] = clamp(float(payload["cortisol_decay"]), 0.0, 0.1)
+        if "panic_trn_gain" in payload:
+            sim.config["panic_trn_gain"] = clamp(float(payload["panic_trn_gain"]), 0.0, 5.0)
+        if "panic_motor_bias" in payload:
+            sim.config["panic_motor_bias"] = clamp(float(payload["panic_motor_bias"]), 0.0, 5.0)
+        if "stress_learning_gain" in payload:
+            sim.config["stress_learning_gain"] = clamp(float(payload["stress_learning_gain"]), 0.0, 5.0)
 
         return jsonify({"status": "updated", "config": sim.config})
 
