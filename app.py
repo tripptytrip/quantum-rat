@@ -9,7 +9,7 @@ import csv
 import random
 from collections import deque
 from threading import Lock
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 app = Flask(__name__)
 
@@ -559,7 +559,7 @@ class ReplayBuffer:
             return []
         return list(self.buf)[-k:]
 
-    def sample_older(self) -> Dict[str, Any] | None:
+    def sample_older(self) -> Optional[Dict[str, Any]]:
         if len(self.buf) < 8:
             return None
         cutoff = int(len(self.buf) * 0.25)
