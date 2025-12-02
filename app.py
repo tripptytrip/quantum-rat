@@ -817,18 +817,6 @@ class DendriticCluster:
             atp_availability = real_atp
         else:
             atp_availability = 1.0 # Infinite energy mode
-            
-        arousal = (dopamine * 0.5) + (frustration * 0.5) + extra_arousal + lc_out["arousal_boost"]
-        if atp_availability < 0.2:
-            arousal = 0.0
-
-        amygdala_drive = float(danger_level) * w_amyg * fear_gain
-        pfc_drive = float(frustration) * w_hip
-
-        trn_modes = self.trn.step(arousal, amygdala_drive, pfc_drive)
-
-        gain_sensory = 1.0 if trn_modes[0] == "TONIC" else 0.05
-        gain_memory = 1.0 if trn_modes[1] == "TONIC" else 0.05
 
         if reward_signal > 0:
             self.time_cells.reset()
@@ -849,13 +837,12 @@ class DendriticCluster:
         if norm_old > 0:
             sensory_vec_old_raw /= norm_old
 
-        # Gate the old pathway
-        sensory_vec_old_gated = sensory_vec_old_raw * gain_sensory
-
         novelty = 0.0
+        sensory_vec_new_raw = None
+        vis_data = None
+        som_data = None
 
-        # 2. Compute new sensory vector (gated)
-        sensory_vec_new_gated = np.array([0.0, 0.0])
+        # 2. Compute new sensory vector (raw; gating later)
         pain = 0.0
         touch = 0.0
 
@@ -871,26 +858,43 @@ class DendriticCluster:
             if norm_new > 0:
                 sensory_vec_new_raw /= norm_new
             vis_data["vis_vec"] = sensory_vec_new_raw
-
-            if enable_thalamus:
-                thalamus_out = self.thalamus.relay(vis_data, som_data, topdown_attention=pfc_drive, relay_gain=gain_sensory * lc_out["attention_gain"])
-                sensory_vec_new_gated = thalamus_out["relay_vec"]
-            else:
-                # If no thalamus, just use the cortex output, but still gate it
-                sensory_vec_new_gated = sensory_vec_new_raw * gain_sensory
         
-        # 3. Blend the two gated vectors
-        k = clamp(float(sensory_blend), 0.0, 1.0)
-        sensory_vec = ((1 - k) * sensory_vec_old_gated) + (k * sensory_vec_new_gated)
-
-        current_memory = self.pfc.memory * gain_memory
-
         lc_out = self.lc.step(
             novelty=novelty,
             pain=pain,
             reward=float(1.0 if reward_signal > 0 else 0.0),
             danger=float(danger_level),
         )
+
+        arousal = (dopamine * 0.5) + (frustration * 0.5) + extra_arousal + lc_out["arousal_boost"]
+        if atp_availability < 0.2:
+            arousal = 0.0
+
+        amygdala_drive = float(danger_level) * w_amyg * fear_gain
+        pfc_drive = float(frustration) * w_hip
+
+        trn_modes = self.trn.step(arousal, amygdala_drive, pfc_drive)
+
+        gain_sensory = 1.0 if trn_modes[0] == "TONIC" else 0.05
+        gain_memory = 1.0 if trn_modes[1] == "TONIC" else 0.05
+
+        sensory_vec_old_gated = sensory_vec_old_raw * gain_sensory
+        sensory_vec_new_gated = np.array([0.0, 0.0])
+
+        if enable_sensory_cortex and sensory_vec_new_raw is not None:
+            if enable_thalamus:
+                thalamus_out = self.thalamus.relay(
+                    vis_data, som_data, topdown_attention=pfc_drive, relay_gain=gain_sensory * lc_out["attention_gain"]
+                )
+                sensory_vec_new_gated = thalamus_out["relay_vec"]
+            else:
+                sensory_vec_new_gated = sensory_vec_new_raw * gain_sensory
+
+        # 3. Blend the two gated vectors
+        k = clamp(float(sensory_blend), 0.0, 1.0)
+        sensory_vec = ((1 - k) * sensory_vec_old_gated) + (k * sensory_vec_new_gated)
+
+        current_memory = self.pfc.memory * gain_memory
 
         plasticity_mod = (ext_lactate / 0.5) * (0.5 + 0.5 * w_str)
         plasticity_mod *= lc_out["plasticity_gain"]
