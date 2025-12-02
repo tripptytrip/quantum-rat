@@ -7,6 +7,7 @@ import os
 import copy
 import csv
 import random
+import hashlib
 from collections import deque
 from threading import Lock
 from typing import Any, Dict, List, Tuple, Optional
@@ -30,6 +31,18 @@ def angdiff(a: float, b: float) -> float:
     return abs(d)
 
 
+def finite_or_zero(arr: np.ndarray) -> np.ndarray:
+    return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def ema(prev: float, target: float, tau: float, dt: float) -> float:
+    a = float(np.exp(-dt / max(tau, 1e-9)))
+    return a * prev + (1.0 - a) * target
+
+
+BASE_DT = 0.05  # legacy timestep
+
+
 def maybe_downsample(arr: np.ndarray, ds: int) -> np.ndarray:
     """Downsample a 2D array by stride ds (ds=1 => no-op)."""
     if ds <= 1:
@@ -42,13 +55,18 @@ def maybe_downsample(arr: np.ndarray, ds: int) -> np.ndarray:
 
 
 class MicrotubuleSimulator2D:
-    def __init__(self, label, length_points=32, seam_shift=3, dt=0.01):
+    def __init__(self, label, length_points=32, seam_shift=3, dt=0.01, neighbor_mode: str = "legacy", rng=None):
+        if rng is None:
+            raise ValueError("MicrotubuleSimulator2D requires rng injection")
         self.label = label
         # In this model: X=13 (Circumference/Protofilaments), Y=Length
         self.Nx = 13
         self.Ny = length_points
         self.dt = dt
         self.seam_shift = seam_shift  # The "3-start helix" shift
+        self.neighbor_mode = neighbor_mode
+        self.rng = rng
+        self.deterministic_mode = False
 
         # Physics Constants (normalized)
         self.H_BAR = 1.0
@@ -65,8 +83,8 @@ class MicrotubuleSimulator2D:
         self.reset_wavefunction()
 
     def reset_wavefunction(self):
-        noise_r = 0.1 * (np.random.rand(self.Ny, self.Nx) - 0.5)
-        noise_i = 0.1 * (np.random.rand(self.Ny, self.Nx) - 0.5)
+        noise_r = 0.1 * (self.rng.random((self.Ny, self.Nx)) - 0.5)
+        noise_i = 0.1 * (self.rng.random((self.Ny, self.Nx)) - 0.5)
         self.psi = (noise_r + 1j * noise_i).astype(COMPLEX_TYPE)
         self.superradiance.fill(0.0)
         self.accumulated_Eg = 0.0
@@ -119,7 +137,7 @@ class MicrotubuleSimulator2D:
         self.superradiance = np.clip(self.superradiance, 0.0, 1.0)
 
         # 2) Dipole coupling field
-        neighbors = [
+        neighbors_canonical = [
             (1, 0, 1.0),
             (-1, 0, 1.0),
             (0, 1, 0.58),
@@ -127,10 +145,19 @@ class MicrotubuleSimulator2D:
             (1, 1, 0.4),
             (-1, -1, 0.4),
         ]
+        neighbors_legacy = [
+            (0, 1, 1.0),
+            (0, -1, 1.0),
+            (1, 0, 0.58),
+            (-1, 0, 0.58),
+            (1, 1, 0.4),
+            (-1, -1, 0.4),
+        ]
+        neighbors = neighbors_canonical if self.neighbor_mode == "canonical" else neighbors_legacy
 
         dipole_potential = np.zeros_like(self.psi, dtype=COMPLEX_TYPE)
 
-        for dy, dx, coupling in neighbors:
+        for dx, dy, coupling in neighbors:
             psi_neighbor = self.get_helical_neighbor(self.psi, dx, dy)
             effective_coupling = coupling
             if dx != 0:
@@ -140,6 +167,8 @@ class MicrotubuleSimulator2D:
         # 3) Phase Dynamics
         collapse_event = False
         avg_coherence = float(np.mean(self.superradiance))
+        if self.deterministic_mode:
+            avg_coherence = float(np.round(avg_coherence, 10))
 
         if avg_coherence < 0.2:
             # Classical-ish relaxation
@@ -162,14 +191,18 @@ class MicrotubuleSimulator2D:
             # Update Eg based on *current* density (recompute)
             density_now = np.abs(self.psi) ** 2
             current_Eg = float(np.var(density_now) * 10.0)
+            if self.deterministic_mode:
+                current_Eg = float(np.round(current_Eg, 10))
             self.accumulated_Eg += current_Eg * self.dt
+            if self.deterministic_mode:
+                self.accumulated_Eg = float(np.round(self.accumulated_Eg, 10))
 
             if self.accumulated_Eg > self.H_BAR:
                 self.phase = "COLLAPSE"
                 collapse_event = True
                 # Collapse decision uses the latest density
                 mean_d = float(np.mean(density_now))
-                if np.random.rand() > 0.5:
+                if self.rng.random() > 0.5:
                     self.psi = np.where(density_now > mean_d, 1.0 + 0j, 0.0 + 0j)
                 else:
                     self.reset_wavefunction()
@@ -254,6 +287,7 @@ class TRNGate:
         self.h_gates = np.array([0.0, 0.0])
         self.modes = ["TONIC", "TONIC"]
         self.W_lat = 0.5
+        self.deterministic_mode = False
 
     def step(self, arousal_level: float, amygdala_drive: float, pfc_attention: float, dt: float = 0.05):
         arousal_level = clamp(float(arousal_level), 0.0, 2.0)
@@ -276,10 +310,16 @@ class TRNGate:
             if arousal_level < 0.2:
                 target_v = -75.0
 
-            new_potentials[i] += (target_v - self.sectors[i]) * 0.1
+            tau_v = 0.25
+            alpha_v = 1.0 - np.exp(-dt / tau_v)
+            new_potentials[i] += (target_v - self.sectors[i]) * alpha_v
+            if self.deterministic_mode:
+                new_potentials[i] = float(np.round(new_potentials[i], 10))
 
             h_inf = 1.0 / (1.0 + np.exp((new_potentials[i] + 70.0) / 4.0))
             self.h_gates[i] += ((h_inf - self.h_gates[i]) / 20.0) * dt
+            if self.deterministic_mode:
+                self.h_gates[i] = float(np.round(self.h_gates[i], 10))
 
             if self.h_gates[i] > 0.6 and new_potentials[i] > -65.0:
                 self.modes[i] = "BURST"
@@ -337,14 +377,13 @@ class LocusCoeruleus:
         danger  = clamp(float(danger), 0.0, 1.0)
 
         surprise = abs(reward - self.reward_pred)
-        self.reward_pred = 0.98 * self.reward_pred + 0.02 * reward
+        self.reward_pred = ema(self.reward_pred, reward, tau=0.25, dt=dt)
 
         salience = max(novelty, pain, danger, surprise)
 
-        self.phasic_ne = clamp(0.85 * self.phasic_ne + 0.35 * salience, 0.0, 1.0)
-
         target_tonic = clamp(0.15 + 0.55 * novelty + 0.45 * danger + 0.25 * pain, 0.0, 1.0)
-        self.tonic_ne = clamp(0.98 * self.tonic_ne + 0.02 * target_tonic, 0.0, 1.0)
+        self.phasic_ne = clamp(ema(self.phasic_ne, salience, tau=0.10, dt=dt), 0.0, 1.0)
+        self.tonic_ne = clamp(ema(self.tonic_ne, target_tonic, tau=1.50, dt=dt), 0.0, 1.0)
 
         arousal_boost   = 0.6 * self.tonic_ne + 1.0 * self.phasic_ne
         attention_gain  = clamp(0.7 + 0.7 * self.tonic_ne + 0.4 * self.phasic_ne, 0.5, 2.0)
@@ -468,8 +507,14 @@ class PFC_Stripe:
 
 
 class BasalGanglia:
-    def __init__(self):
-        self.w_gate = np.random.rand(3)
+    def __init__(self, rng=None):
+        if rng is None:
+            raise ValueError("BasalGanglia requires rng injection")
+        self.rng = rng
+        self.reset()
+
+    def reset(self):
+        self.w_gate = self.rng.random(3)
         self.w_motor = np.ones(3)
         self.pvlv = PVLV_Learning()
 
@@ -535,9 +580,12 @@ class TimeCellPopulation:
 
 
 class ReplayBuffer:
-    def __init__(self, capacity: int = 240):
+    def __init__(self, capacity: int = 240, py_rng=None):
         self.capacity = int(max(10, capacity))
         self.buf = deque(maxlen=self.capacity)
+        if py_rng is None:
+            raise ValueError("ReplayBuffer requires a seeded random.Random instance")
+        self.py_rng = py_rng
 
     def set_capacity(self, capacity: int):
         capacity = int(max(10, capacity))
@@ -564,7 +612,7 @@ class ReplayBuffer:
             return None
         cutoff = int(len(self.buf) * 0.25)
         pool = list(self.buf)[: max(1, len(self.buf) - cutoff)]
-        return random.choice(pool) if pool else None
+        return self.py_rng.choice(pool) if pool else None
 
 
 class HippocampalReplay:
@@ -572,8 +620,11 @@ class HippocampalReplay:
     Runs only during offline states (microsleep).
     Replays recent snapshots; sometimes "bridges" with an older snapshot to link events.
     """
-    def __init__(self, capacity: int = 240):
-        self.buffer = ReplayBuffer(capacity)
+    def __init__(self, capacity: int = 240, py_rng=None):
+        if py_rng is None:
+            raise ValueError("HippocampalReplay requires a seeded random.Random instance")
+        self.py_rng = py_rng
+        self.buffer = ReplayBuffer(capacity, py_rng=self.py_rng)
         self.last_replay_trace: List[List[float]] = []
 
     def set_capacity(self, capacity: int):
@@ -611,7 +662,7 @@ class HippocampalReplay:
         for snap in recent:
             a = snap
             b = None
-            if random.random() < bridge_prob:
+            if self.py_rng.random() < bridge_prob:
                 b = self.buffer.sample_older()
 
             base_salience_a = abs(a["r"]) + a["danger"] + 0.25 * a["fr"]
@@ -638,11 +689,20 @@ class HippocampalReplay:
 
 
 class DendriticCluster:
-    def __init__(self):
+    def __init__(self, rng=None, py_rng=None, mt_rng=None, load_genome: bool = True):
+        if rng is None:
+            raise ValueError("DendriticCluster requires rng injection")
+        if py_rng is None:
+            raise ValueError("DendriticCluster requires py_rng injection")
+        if mt_rng is None:
+            raise ValueError("DendriticCluster requires mt_rng injection")
+        self.rng = rng
+        self.py_rng = py_rng
+        self.mt_rng = mt_rng
         self.pfc = PFC_Stripe(0)
-        self.basal_ganglia = BasalGanglia()
+        self.basal_ganglia = BasalGanglia(rng=self.rng)
 
-        self.soma = MicrotubuleSimulator2D("Executive Soma", length_points=32)
+        self.soma = MicrotubuleSimulator2D("Executive Soma", length_points=32, rng=self.mt_rng)
         self.astrocyte = Astrocyte()
         self.trn = TRNGate()
         self.time_cells = TimeCellPopulation()
@@ -657,7 +717,7 @@ class DendriticCluster:
         self.prp_level = 0.0
 
         # Theta / Grid / HD
-        self.mt_theta = MicrotubuleSimulator2D("Theta Memory", length_points=32)
+        self.mt_theta = MicrotubuleSimulator2D("Theta Memory", length_points=32, rng=self.mt_rng)
         self.mt_theta.H_BAR = 6.0
         self.grid_k = [
             np.array([np.cos(0), np.sin(0)]),
@@ -670,13 +730,14 @@ class DendriticCluster:
         self.hd_cell_count = 36
         self.hd_cells = self._create_activity_bump(self.hd_cell_count, 0)
         self.hd_integration_weight = 2.0
-        self.replay = HippocampalReplay(capacity=240)
+        self.replay = HippocampalReplay(capacity=240, py_rng=self.py_rng)
 
         self.place_memories: List[np.ndarray] = []
 
         # Evolution weights (used below)
         self.weights = {"amygdala": 1.0, "striatum": 1.0, "hippocampus": 1.0}
-        self.load_latest_memory()
+        if load_genome:
+            self.load_latest_memory()
 
     def _create_activity_bump(self, size, position):
         x = np.arange(size)
@@ -702,7 +763,7 @@ class DendriticCluster:
         for i in range(3):
             rotated_k = rotation_matrix @ self.grid_k[i]
             proj = float(np.dot(velocity, rotated_k))
-            drift = float(np.random.normal(0, 0.001))
+            drift = float(self.rng.normal(0, 0.001))
             self.grid_phases[i] += (proj * self.grid_scale) + drift
             self.grid_phases[i] %= (2 * np.pi)
 
@@ -734,14 +795,19 @@ class DendriticCluster:
             json.dump(self.weights, f)
 
     def update_stc(self, activity_vector, reward_signal, dt=0.05):
-        self.synaptic_tags *= 0.95
+        tag_tau = 2.0
+        prp_tau = 5.0
+        tag_decay = np.exp(-dt / tag_tau)
+        prp_decay = np.exp(-dt / prp_tau)
+
+        self.synaptic_tags *= tag_decay
         self.synaptic_tags += 0.1 * np.abs(activity_vector)
         self.synaptic_tags = np.clip(self.synaptic_tags, 0.0, 1.0)
 
         if reward_signal > 0.5:
             self.prp_level = 1.0
         else:
-            self.prp_level *= 0.98
+            self.prp_level *= prp_decay
 
         consolidation = self.synaptic_tags * self.prp_level
         return consolidation
@@ -817,6 +883,13 @@ class DendriticCluster:
         cortisol: float = 0.0,
         near_death: bool = False,
         panic_trn_gain: float = 0.5,
+        replay_len: int = 240,
+        dt: float = 0.05,
+        precomputed_trn_modes: Optional[List[str]] = None,
+        arousal: float = 0.0,
+        amygdala_drive: float = 0.0,
+        pfc_drive: float = 0.0,
+        precomputed_lc_out: Optional[Dict[str, float]] = None,
     ):
         # ---- Apply genome weights so evolution actually matters ----
         w_amyg = clamp(self.weights.get("amygdala", 1.0), 0.1, 10.0)
@@ -828,7 +901,7 @@ class DendriticCluster:
         neural_activity = float(np.linalg.norm(rat_vel) + frustration)
         
         # --- LOGIC UPDATE: Energy Constraint Switch ---
-        real_atp, ext_lactate = self.astrocyte.step(neural_activity)
+        real_atp, ext_lactate = self.astrocyte.step(neural_activity, dt=dt)
         if energy_constraint:
             atp_availability = real_atp
         else:
@@ -875,22 +948,21 @@ class DendriticCluster:
                 sensory_vec_new_raw /= norm_new
             vis_data["vis_vec"] = sensory_vec_new_raw
         
-        lc_out = self.lc.step(
-            novelty=novelty,
-            pain=pain,
-            reward=float(1.0 if reward_signal > 0 else 0.0),
-            danger=float(danger_level),
-        )
+        if precomputed_lc_out is not None:
+            lc_out = precomputed_lc_out
+        else:
+            lc_out = self.lc.step(
+                novelty=novelty,
+                pain=pain,
+                reward=float(1.0 if reward_signal > 0 else 0.0),
+                danger=float(danger_level),
+                dt=dt,
+            )
 
-        arousal = (dopamine * 0.5) + (frustration * 0.5) + extra_arousal + lc_out["arousal_boost"] + (0.3 * panic)
-        if atp_availability < 0.2:
-            arousal = 0.0
-
-        amygdala_drive = float(danger_level) * w_amyg * fear_gain
-        amygdala_drive *= (1.0 + 0.2 * panic)
-        pfc_drive = float(frustration) * w_hip
-
-        trn_modes = self.trn.step(arousal, amygdala_drive, pfc_drive)
+        if precomputed_trn_modes is not None:
+            trn_modes = precomputed_trn_modes
+        else:
+            trn_modes = self.trn.step(arousal, amygdala_drive, pfc_drive, dt=dt)
 
         gain_sensory = 1.0 if trn_modes[0] == "TONIC" else 0.05
         gain_memory = 1.0 if trn_modes[1] == "TONIC" else 0.05
@@ -958,7 +1030,7 @@ class DendriticCluster:
                 frustration=frustration,
                 reward_signal=reward_signal,
                 danger_level=danger_level,
-                replay_len=240,
+                replay_len=int(replay_len),
                 near_death=near_death,
             )
 
@@ -972,11 +1044,11 @@ class Predator:
         self.vel = np.array([0.0, 0.0])
         self.speed = 0.35
 
-    def hunt(self, rat_pos, grid, map_size):
+    def hunt(self, rat_pos, grid, map_size, dt_scale: float = 1.0):
         diff = rat_pos - self.pos
         dist = np.linalg.norm(diff)
         if dist > 0:
-            desired_vel = (diff / dist) * self.speed
+            desired_vel = (diff / dist) * (self.speed * dt_scale)
             next_pos = self.pos + desired_vel
             nx, ny = int(next_pos[0]), int(next_pos[1])
             if 0 <= nx < map_size and 0 <= ny < map_size:
@@ -1005,7 +1077,8 @@ class Cerebellum:
 
 class SimulationState:
     def __init__(self):
-        self.brain = DendriticCluster()
+        self._init_rngs(seed=None)
+        self.brain = DendriticCluster(rng=self.rng_brain, py_rng=self.py_rng, mt_rng=self.rng_microtub, load_genome=True)
 
         self.map_size = 40
         self.rat_pos = np.array([3.0, 3.0])
@@ -1032,6 +1105,7 @@ class SimulationState:
         self.cortisol = 0.0
         self.behaviour_mode = "SAFE"
 
+        # Deterministic mode contract: same seed, config, and /step batch_size sequence produce identical state/output.
         # Add config defaults + helpful knobs
         self.config = {
             "speed": 1,
@@ -1039,6 +1113,9 @@ class SimulationState:
             "anesthetic": 0.0,
             "downsample": 1,
             "max_speed": 10,
+            "dt": 0.05,  # master timestep (kept at legacy default)
+            "seed": None,
+            "deterministic": 0.0,
             # --- NEW KNOBS ---
             "cerebellum_gain": 1.0,  # 0.0 = Clumsy, 1.0 = Precise
             "memory_gain": 1.0,      # 0.0 = Pure Sensory, 1.0 = Balanced
@@ -1053,6 +1130,8 @@ class SimulationState:
             "replay_len": 240,          # ring buffer capacity (snapshots)
             "replay_strength": 0.15,    # how much replay affects consolidation
             "replay_bridge_prob": 0.25, # chance to mix in an older memory
+            # Microtubule neighbor interpretation
+            "mt_neighbor_mode": "legacy",
             # --- NEW STRESS SYSTEM KNOBS ---
             "panic_gain": 1.0,
             "cortisol_gain": 0.5,
@@ -1061,6 +1140,7 @@ class SimulationState:
             "panic_motor_bias": 0.5,
             "stress_learning_gain": 0.5,
         }
+        self.apply_runtime_config()
 
         self.generation = 1
         self.best_fitness = 0.0
@@ -1096,9 +1176,87 @@ class SimulationState:
         self.occupancy_grid = np.zeros((self.map_size, self.map_size), dtype=int)
         self.generate_map()
 
+    def _init_rngs(self, seed: Optional[int]):
+        base_ss = np.random.SeedSequence(seed)
+        child = base_ss.spawn(8)
+        self.rng_map = np.random.default_rng(child[0])
+        self.rng_brain = np.random.default_rng(child[1])
+        self.rng_motion = np.random.default_rng(child[2])
+        self.rng_microtub = np.random.default_rng(child[3])
+        self.rng_noise = np.random.default_rng(child[4])
+        self.rng_misc = np.random.default_rng(child[5])
+        py_seed = seed + 1337 if seed is not None else int(child[6].generate_state(1)[0])
+        self.py_rng = random.Random(py_seed)
+
+    def deterministic_reset(self):
+        self.frames_alive = 0
+        self.score = 0
+        self.deaths = 0
+        self.frustration = 0.0
+        self.panic = 0.0
+        self.cortisol = 0.0
+        self.pheromones = []
+        self.phantom_trace = []
+
+        # Rebuild brain with current seeded streams
+        self.brain = DendriticCluster(rng=self.rng_brain, py_rng=self.py_rng, mt_rng=self.rng_microtub, load_genome=False)
+        self.brain.soma.neighbor_mode = self.config.get("mt_neighbor_mode", "legacy")
+        self.brain.mt_theta.neighbor_mode = self.config.get("mt_neighbor_mode", "legacy")
+        det_mode = float(self.config.get("deterministic", 0.0)) > 0.5
+        self.brain.soma.deterministic_mode = det_mode
+        self.brain.mt_theta.deterministic_mode = det_mode
+        self.brain.trn.deterministic_mode = det_mode
+
+        # Regenerate map and reset position/velocity
+        self.generate_map()
+        self.rat_pos = np.array([3.0, 3.0])
+        self.rat_vel = np.array([0.0, 0.6])
+        self.rat_heading = np.pi / 2
+
+        # Reset additional state variables for determinism
+        self.cerebellum = Cerebellum()
+        self.last_touch = 0.0
+        self.last_collision = False
+        self.whisk_phase = 0.0
+        self.vision_buffer = []
+
+    def apply_runtime_config(self):
+        # Apply microtubule neighbor interpretation immediately
+        mode = str(self.config.get("mt_neighbor_mode", "legacy")).lower()
+        mode = mode if mode in {"legacy", "canonical"} else "legacy"
+        self.config["mt_neighbor_mode"] = mode
+        self.brain.soma.neighbor_mode = mode
+        self.brain.mt_theta.neighbor_mode = mode
+        det_mode = float(self.config.get("deterministic", 0.0)) > 0.5
+        self.brain.soma.deterministic_mode = det_mode
+        self.brain.mt_theta.deterministic_mode = det_mode
+        self.brain.trn.deterministic_mode = det_mode
+        # Propagate RNG stream into replay for deterministic control
+        if hasattr(self.brain, "replay"):
+            self.brain.replay.py_rng = self.py_rng
+            if hasattr(self.brain.replay, "buffer"):
+                self.brain.replay.buffer.py_rng = self.py_rng
+        if hasattr(self.brain, "basal_ganglia"):
+            self.brain.basal_ganglia.rng = self.rng_brain
+        if hasattr(self.brain, "soma"):
+            self.brain.soma.rng = self.rng_microtub
+        if hasattr(self.brain, "mt_theta"):
+            self.brain.mt_theta.rng = self.rng_microtub
+        if hasattr(self.brain, "rng"):
+            self.brain.rng = self.rng_brain
+        if hasattr(self.brain, "mt_rng"):
+            self.brain.mt_rng = self.rng_microtub
+        if hasattr(self.brain, "py_rng"):
+            self.brain.py_rng = self.py_rng
+
+    def reseed(self, seed: int):
+        seed = int(seed)
+        self._init_rngs(seed)
+        self.apply_runtime_config()
+
     def generate_map(self):
         while True:
-            self.occupancy_grid = np.random.choice([0, 1], size=(self.map_size, self.map_size), p=[0.6, 0.4])
+            self.occupancy_grid = self.rng_map.choice([0, 1], size=(self.map_size, self.map_size), p=[0.6, 0.4])
             for _ in range(5):
                 new_grid = self.occupancy_grid.copy()
                 for y in range(1, self.map_size - 1):
@@ -1144,7 +1302,8 @@ class SimulationState:
 
                 far_tiles = [t for t in reachable_tiles if (t[0] - 3) ** 2 + (t[1] - 3) ** 2 > 200]
                 if far_tiles:
-                    p_spawn = far_tiles[np.random.randint(len(far_tiles))]
+                    idx = int(self.rng_map.integers(len(far_tiles)))
+                    p_spawn = far_tiles[idx]
                     self.predator = Predator([float(p_spawn[0]), float(p_spawn[1])])
                     self.pheromones = []
                     self.brain.astrocyte = Astrocyte()
@@ -1174,7 +1333,8 @@ class SimulationState:
 
     def _spawn_single_target(self):
         while True:
-            tx, ty = np.random.randint(1, self.map_size - 1), np.random.randint(1, self.map_size - 1)
+            tx = int(self.rng_map.integers(1, self.map_size - 1))
+            ty = int(self.rng_map.integers(1, self.map_size - 1))
             if self.occupancy_grid[ty, tx] != 0:
                 continue
 
@@ -1254,7 +1414,9 @@ class SimulationState:
             self.vision_buffer.append({"dist": float(dist), "type": int(obj_type), "angle": float(ray_angle)})
 
     def update_whiskers(self):
-        self.whisk_phase += self.whisk_freq
+        dt_local = float(self.config.get("dt", BASE_DT))
+        dt_scale = dt_local / BASE_DT
+        self.whisk_phase += self.whisk_freq * dt_scale
         self.whisk_angle = float(np.sin(self.whisk_phase) * self.whisk_amp)
 
         angles = [(-np.pi / 4) + self.whisk_angle, (np.pi / 4) - self.whisk_angle]
@@ -1279,10 +1441,11 @@ class SimulationState:
         self.run_history.append(float(fitness))
         BATCH_SIZE = 5
 
-        with open("evolution_log.csv", "a") as f:
-            f.write(
-                f"{self.generation},{fitness:.2f},{self.brain.weights['amygdala']:.3f},{self.brain.weights['striatum']:.3f},{self.brain.weights['hippocampus']:.3f}\n"
-            )
+        if not (float(self.config.get("deterministic", 0.0)) > 0.5):
+            with open("evolution_log.csv", "a") as f:
+                f.write(
+                    f"{self.generation},{fitness:.2f},{self.brain.weights['amygdala']:.3f},{self.brain.weights['striatum']:.3f},{self.brain.weights['hippocampus']:.3f}\n"
+                )
 
         if len(self.run_history) >= BATCH_SIZE:
             avg_fitness = sum(self.run_history) / len(self.run_history)
@@ -1298,7 +1461,7 @@ class SimulationState:
 
             mutation_rate = 0.2
             for k in self.brain.weights:
-                change = 1.0 + float(np.random.normal(0, mutation_rate))
+                change = 1.0 + float(self.rng_misc.normal(0, mutation_rate))
                 self.brain.weights[k] = max(0.1, min(10.0, self.brain.weights[k] * change))
 
             self.genes_being_tested = copy.deepcopy(self.brain.weights)
@@ -1319,11 +1482,16 @@ class SimulationState:
         # reset short-term state
         self.brain.astrocyte = Astrocyte()
         self.brain.trn = TRNGate()
-        self.brain.basal_ganglia = BasalGanglia()
+        self.brain.trn.deterministic_mode = (float(self.config.get("deterministic", 0.0)) > 0.5)
+        if hasattr(self.brain, "basal_ganglia"):
+            self.brain.basal_ganglia.reset()
+        else:
+            self.brain.basal_ganglia = BasalGanglia(rng=self.rng_brain)
         self.brain.place_memories = []
 
         while True:
-            tx, ty = np.random.randint(1, 39), np.random.randint(1, 39)
+            tx = int(self.rng_map.integers(1, 39))
+            ty = int(self.rng_map.integers(1, 39))
             if self.occupancy_grid[ty, tx] == 0:
                 dist = (tx - 3) ** 2 + (ty - 3) ** 2
                 if dist > 200:
@@ -1452,6 +1620,8 @@ def step():
         anesthetic_level = clamp(float(sim.config.get("anesthetic", 0.0)), 0.0, 1.0)
         downsample = int(sim.config.get("downsample", 1))
         downsample = int(np.clip(downsample, 1, 8))
+        dt = float(sim.config.get("dt", 0.05))
+        dt_scale = dt / BASE_DT
 
         # Default placeholders so we can always return on last frame
         soma_density = np.zeros((sim.brain.soma.Ny, sim.brain.soma.Nx), dtype=float)
@@ -1474,9 +1644,6 @@ def step():
             current_atp = float(sim.brain.astrocyte.neuronal_atp)
             dist_cat = float(np.linalg.norm(sim.rat_pos - sim.predator.pos))
             
-            # Use last_touch for arousal calculation
-            arousal_from_touch = sim.last_touch * 0.1
-
             if current_atp <= 0.01 or dist_cat < 1.0:
                 sim.die()
                 return jsonify(
@@ -1503,9 +1670,13 @@ def step():
                     }
                 )
 
-            sim.dopamine = max(0.1, sim.dopamine * 0.995)
+            tau_dopa = 10.0
+            decay_dopa = np.exp(-dt / tau_dopa)
+            sim.dopamine = max(0.1, sim.dopamine * decay_dopa)
             if sim.frustration < 0.1:
-                sim.serotonin = min(1.0, sim.serotonin + 0.005)
+                tau_ser = 10.0
+                alpha_ser = 1.0 - np.exp(-dt / tau_ser)
+                sim.serotonin = min(1.0, sim.serotonin + alpha_ser * (1.0 - sim.serotonin))
 
             # Head direction update needs to happen before TRN modes are checked
             new_heading = float(np.arctan2(sim.rat_vel[1], sim.rat_vel[0]))
@@ -1530,14 +1701,16 @@ def step():
             atp = float(sim.brain.astrocyte.neuronal_atp)
             atp_factor = 1.0 - clamp(atp / 1.0, 0.0, 1.0)
             panic_input = clamp(danger_level * (1.0 + atp_factor), 0.0, 2.0)
-            sim.panic = sim.panic * 0.9 + panic_input * 0.1
+            tau_panic = -BASE_DT / np.log(0.9)
+            alpha_panic = 1.0 - np.exp(-dt / tau_panic)
+            sim.panic = sim.panic + alpha_panic * (panic_input - sim.panic)
             panic_signal = sim.panic * panic_gain
 
             # --- NEW: Cortisol update (slow stress hormone) ---
             cort_gain = float(sim.config.get("cortisol_gain", 0.5))
             cort_decay = float(sim.config.get("cortisol_decay", 0.005))
-            sim.cortisol += cort_gain * panic_input * 0.01
-            sim.cortisol -= cort_decay
+            sim.cortisol += cort_gain * panic_input * 0.01 * dt_scale
+            sim.cortisol -= cort_decay * dt_scale
             sim.cortisol = clamp(sim.cortisol, 0.0, 2.0)
 
             # --- NEW: Behavioural mode classification ---
@@ -1550,7 +1723,50 @@ def step():
             if sim.cortisol > 0.5 and sim.behaviour_mode == "SAFE":
                 sim.behaviour_mode = "ALERT"
 
-            trn_modes = sim.brain.trn.modes
+            # ---- PRECOMPUTE TRN MODES ----
+            # This is the new logic to pre-compute TRN modes
+            w_amyg = clamp(sim.brain.weights.get("amygdala", 1.0), 0.1, 10.0)
+            w_hip = clamp(sim.brain.weights.get("hippocampus", 1.0), 0.1, 10.0)
+            fear_gain = float(sim.config.get("fear_gain", 1.0))
+
+            # Precompute touch
+            touch_now = 1.0 if (sim.whisker_hits and any(sim.whisker_hits)) else 0.0
+            arousal_from_touch = touch_now * 0.1
+
+            # Precompute collision
+            next_x_pos = np.array([sim.rat_pos[0] + sim.rat_vel[0] * dt_scale, sim.rat_pos[1]])
+            next_y_pos = np.array([sim.rat_pos[0], sim.rat_pos[1] + sim.rat_vel[1] * dt_scale])
+            pred_hit_x = sim.check_collision(next_x_pos)
+            pred_hit_y = sim.check_collision(next_y_pos)
+            collision_predicted = pred_hit_x or pred_hit_y
+            pain_now = 1.0 if collision_predicted else 0.0
+
+            # Precompute reward
+            reward_signal = 0.0
+            for idx, target_pos in enumerate(sim.targets):
+                if float(np.linalg.norm(sim.rat_pos - target_pos)) < 1.0:
+                    reward_signal = 1.0
+                    break
+
+            # Precompute LC output
+            lc_out = sim.brain.lc.step(
+                novelty=0.0,  # Simplified for now
+                pain=pain_now,
+                reward=reward_signal,
+                danger=float(danger_level),
+                dt=dt,
+            )
+            
+            arousal = (sim.dopamine * 0.5) + (sim.frustration * 0.5) + arousal_from_touch + lc_out["arousal_boost"] + (0.3 * panic_signal)
+            if current_atp < 0.2:
+                arousal = 0.0
+
+            amygdala_drive = float(danger_level) * w_amyg * fear_gain
+            amygdala_drive *= (1.0 + 0.2 * panic_signal)
+            pfc_drive = float(sim.frustration) * w_hip
+
+            trn_modes = sim.brain.trn.step(arousal, amygdala_drive, pfc_drive, dt=dt)
+            # ---- END PRECOMPUTE ----
 
             # If both in burst: return microsleep on final iteration
             if trn_modes[0] == "BURST" and trn_modes[1] == "BURST":
@@ -1572,6 +1788,13 @@ def step():
                         cortisol=sim.cortisol,
                         near_death=near_death,
                         panic_trn_gain=panic_trn_gain_ms,
+                        replay_len=int(sim.config.get("replay_len", 240)),
+                        dt=dt,
+                        precomputed_trn_modes=trn_modes,
+                        arousal=arousal,
+                        amygdala_drive=amygdala_drive,
+                        pfc_drive=pfc_drive,
+                        precomputed_lc_out=lc_out,
                     )
                     # --- OFFLINE HIPPOCAMPAL REPLAY ---
                     if float(sim.config.get("enable_replay", 0.0)) > 0.5:
@@ -1617,6 +1840,7 @@ def step():
                     )
                 continue
 
+            # This reward signal calculation is now duplicated, but it's fine for now.
             reward_signal = 0.0
             for idx, target_pos in enumerate(sim.targets):
                 if float(np.linalg.norm(sim.rat_pos - target_pos)) < 1.0:
@@ -1630,6 +1854,13 @@ def step():
             
             # NOTE: head direction is now computed above the microsleep check
 
+            # --- PREDICTIVE COLLISION ---
+            next_x_pos = np.array([sim.rat_pos[0] + sim.rat_vel[0] * dt_scale, sim.rat_pos[1]])
+            next_y_pos = np.array([sim.rat_pos[0], sim.rat_pos[1] + sim.rat_vel[1] * dt_scale])
+            pred_hit_x = sim.check_collision(next_x_pos)
+            pred_hit_y = sim.check_collision(next_y_pos)
+            collision_predicted = pred_hit_x or pred_hit_y
+            
             # Extract config settings
             cerebellum_gain = float(sim.config.get("cerebellum_gain", 1.0))
             memory_gain = float(sim.config.get("memory_gain", 1.0))
@@ -1639,7 +1870,7 @@ def step():
             panic_motor_bias = float(sim.config.get("panic_motor_bias", 0.5))
             stress_learning_gain = float(sim.config.get("stress_learning_gain", 0.5))
             
-            collision_flag = sim.last_collision
+            collision_flag = collision_predicted
 
             sensory_blend = float(sim.config.get("sensory_blend", 0.0))
             enable_sensory_cortex = float(sim.config.get("enable_sensory_cortex", 0.0)) > 0.5
@@ -1670,6 +1901,13 @@ def step():
                 cortisol=sim.cortisol,
                 near_death=near_death,
                 panic_trn_gain=panic_trn_gain,
+                replay_len=int(sim.config.get("replay_len", 240)),
+                dt=dt,
+                precomputed_trn_modes=trn_modes,
+                arousal=arousal,
+                amygdala_drive=amygdala_drive,
+                pfc_drive=pfc_drive,
+                precomputed_lc_out=lc_out,
             )
             sim.last_touch = touch # Update for next step
 
@@ -1691,7 +1929,7 @@ def step():
             sim.rat_vel = np.nan_to_num(sim.rat_vel)
 
             explore_gain = float(getattr(sim.brain, "lc", None).last.get("explore_gain", 1.0)) if hasattr(sim.brain, "lc") else 1.0
-            tremor = np.random.randn(2) * 0.02 * explore_gain
+            tremor = sim.rng_noise.normal(0.0, 1.0, size=2) * 0.02 * explore_gain
             sim.rat_vel += tremor
 
             s = float(np.linalg.norm(sim.rat_vel))
@@ -1702,7 +1940,7 @@ def step():
             # --- NEW SLIDING PHYSICS LOGIC ---
             
             # 1. Try moving along X axis
-            next_x_pos = np.array([sim.rat_pos[0] + sim.rat_vel[0], sim.rat_pos[1]])
+            next_x_pos = np.array([sim.rat_pos[0] + sim.rat_vel[0] * dt_scale, sim.rat_pos[1]])
             hit_x = sim.check_collision(next_x_pos)
             
             if hit_x:
@@ -1710,10 +1948,10 @@ def step():
                 # Friction on Y when hitting X wall
                 sim.rat_vel[1] *= 0.9 
             else:
-                sim.rat_pos[0] += sim.rat_vel[0]
+                sim.rat_pos[0] += sim.rat_vel[0] * dt_scale
 
             # 2. Try moving along Y axis
-            next_y_pos = np.array([sim.rat_pos[0], sim.rat_pos[1] + sim.rat_vel[1]])
+            next_y_pos = np.array([sim.rat_pos[0], sim.rat_pos[1] + sim.rat_vel[1] * dt_scale])
             hit_y = sim.check_collision(next_y_pos)
             
             if hit_y:
@@ -1721,7 +1959,7 @@ def step():
                 # Friction on X when hitting Y wall
                 sim.rat_vel[0] *= 0.9
             else:
-                sim.rat_pos[1] += sim.rat_vel[1]
+                sim.rat_pos[1] += sim.rat_vel[1] * dt_scale
 
             # 3. Update Status
             sim.last_collision = hit_x or hit_y
@@ -1735,13 +1973,18 @@ def step():
             # Pain increases frustration
             sim.frustration = min(1.0, sim.frustration + pain * 0.05)
 
+            sim.rat_pos = finite_or_zero(sim.rat_pos)
+            sim.rat_vel = finite_or_zero(sim.rat_vel)
+
             sim.cerebellum.update(sim.rat_pos)
 
             # Only hunt if we aren't doing a science experiment
             if not sim.lab.active:
-                sim.predator.hunt(sim.rat_pos, sim.occupancy_grid, sim.map_size)
+                sim.predator.hunt(sim.rat_pos, sim.occupancy_grid, sim.map_size, dt_scale=dt_scale)
 
-            if np.random.rand() < 0.2:
+            base_p = 0.2
+            p_drop = 1.0 - (1.0 - base_p) ** dt_scale
+            if sim.rng_noise.random() < p_drop:
                 sim.pheromones.append(sim.rat_pos.tolist())
                 if len(sim.pheromones) > 1000:
                     sim.pheromones.pop(0)
@@ -1870,12 +2113,17 @@ def config():
     with sim_lock:
         payload = request.json or {}
 
+        prev_det = float(sim.config.get("deterministic", 0.0))
+        prev_seed = sim.config.get("seed")
+
         # Validate & clamp
         if "speed" in payload:
             sim.config["speed"] = int(np.clip(int(payload["speed"]), 1, int(sim.config.get("max_speed", 10))))
         if "max_speed" in payload:
             sim.config["max_speed"] = int(np.clip(int(payload["max_speed"]), 1, 200))
             sim.config["speed"] = int(np.clip(int(sim.config["speed"]), 1, sim.config["max_speed"]))
+        if "dt" in payload:
+            sim.config["dt"] = clamp(float(payload["dt"]), 0.001, 1.0)
         if "sensitivity" in payload:
             sim.config["sensitivity"] = clamp(float(payload["sensitivity"]), 0.001, 1.0)
         if "anesthetic" in payload:
@@ -1909,6 +2157,13 @@ def config():
             sim.config["replay_strength"] = clamp(float(payload["replay_strength"]), 0.0, 2.0)
         if "replay_bridge_prob" in payload:
             sim.config["replay_bridge_prob"] = clamp(float(payload["replay_bridge_prob"]), 0.0, 1.0)
+        if "mt_neighbor_mode" in payload:
+            mode = str(payload["mt_neighbor_mode"]).lower()
+            sim.config["mt_neighbor_mode"] = mode if mode in {"legacy", "canonical"} else "legacy"
+        if "seed" in payload:
+            sim.config["seed"] = None if payload["seed"] in (None, "", "none") else int(payload["seed"])
+        if "deterministic" in payload:
+            sim.config["deterministic"] = clamp(float(payload["deterministic"]), 0.0, 1.0)
         if "panic_gain" in payload:
             sim.config["panic_gain"] = clamp(float(payload["panic_gain"]), 0.0, 5.0)
         if "cortisol_gain" in payload:
@@ -1922,7 +2177,68 @@ def config():
         if "stress_learning_gain" in payload:
             sim.config["stress_learning_gain"] = clamp(float(payload["stress_learning_gain"]), 0.0, 5.0)
 
-        return jsonify({"status": "updated", "config": sim.config})
+        new_det = float(sim.config.get("deterministic", 0.0))
+        new_seed = sim.config.get("seed")
+
+        det_enabled = new_det > 0.5 and new_seed is not None
+        det_changed = (prev_det <= 0.5 and det_enabled) or (prev_seed != new_seed and det_enabled)
+
+        if det_enabled and det_changed:
+            sim.reseed(new_seed)
+            sim.deterministic_reset()
+
+        sim.apply_runtime_config()
+
+        response = {"status": "updated", "config": sim.config}
+        if det_enabled and new_seed is None:
+            response["warning"] = "Determinism requires a seed value."
+
+        return jsonify(response)
+
+
+def brain_fingerprint(sim: SimulationState) -> str:
+    h = hashlib.sha256()
+    h.update(sim.brain.basal_ganglia.w_gate.astype(np.float64).tobytes())
+    h.update(sim.brain.basal_ganglia.w_motor.astype(np.float64).tobytes())
+    h.update(sim.brain.soma.psi.astype(np.complex128).tobytes())
+    h.update(sim.brain.mt_theta.psi.astype(np.complex128).tobytes())
+    h.update(sim.brain.grid_phases.astype(np.float64).tobytes())
+    h.update(sim.brain.hd_cells.astype(np.float64).tobytes())
+    return h.hexdigest()
+
+
+def compute_checksum(sim: SimulationState, state: Dict[str, Any]) -> str:
+    payload = {
+        "rat": state["rat"],
+        "predator": state["predator"],
+        "targets": state["targets"],
+        "brain": brain_fingerprint(sim),
+    }
+    # Use compact separators and sort keys to ensure consistent serialization
+    dump = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(dump.encode("utf-8")).hexdigest()
+
+
+@app.route("/determinism_check", methods=["POST"])
+def determinism_check():
+    payload = request.json or {}
+    seed = int(payload.get("seed", 0))
+    steps = int(max(1, payload.get("steps", 10)))
+    with sim_lock:
+        sim.config["deterministic"] = 1.0
+        sim.config["seed"] = seed
+        sim.reseed(seed)
+        sim.deterministic_reset()
+        sim.apply_runtime_config()
+
+    checksums = []
+    for _ in range(steps):
+        with app.test_request_context("/step", method="POST", json={"batch_size": 1}):
+            resp = step()
+        data = resp.get_json()
+        checksums.append(compute_checksum(sim, data))
+
+    return jsonify({"seed": seed, "steps": steps, "checksums": checksums})
 
 
 if __name__ == "__main__":

@@ -54,6 +54,19 @@
             border-bottom: 1px solid #164e63;
             padding-bottom: 2px;
         }
+        /* CRT Scanline Effect */
+        .image-pixelated {
+            image-rendering: pixelated;
+        }
+        .active-tab-class {
+            color: #22d3ee;
+            border-bottom: 2px solid #22d3ee;
+            background: rgba(34, 211, 238, 0.1);
+        }
+        /* Glassmorphism scrollbar */
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
     </style>
 </head>
 <body class="h-screen flex flex-col p-4 overflow-hidden bg-zinc-950">
