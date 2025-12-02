@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Quantum Rat v3.4: Place Cells</title>
+    <title>Quantum Rat v3.5: Tabbed UI</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="importmap">
       {
@@ -18,17 +18,50 @@
         canvas { outline: none; }
         .btn { padding: 0.5rem 1rem; background-color: #1f2937; border: 1px solid #4b5563; border-radius: 0.375rem; color: inherit; cursor: pointer; transition: all 0.2s; }
         .btn:hover { background-color: #374151; border-color: #6b7280; }
-        #pip-label { position: absolute; bottom: 10px; right: 10px; background: rgba(0,0,0,0.7); padding: 2px 5px; font-size: 10px; color: cyan; border: 1px solid #004444; pointer-events: none; z-index: 10; }
+        .tab-btn { padding-bottom: 0.5rem; text-transform: uppercase; font-size: 0.75rem; font-weight: bold; color: #71717a; border-bottom: 2px solid transparent; transition: all 0.2s; }
+        .tab-btn.active { color: #22d3ee; border-bottom-color: #22d3ee; }
+        .tab-btn:hover:not(.active) { color: #a1a1aa; }
         
-        /* Scanline effect for the Grid View */
+        #pip-label { position: absolute; bottom: 10px; right: 10px; background: rgba(0,0,0,0.7); padding: 2px 5px; font-size: 10px; color: cyan; border: 1px solid #004444; pointer-events: none; z-index: 10; }
         .scanlines { background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.2) 50%, rgba(0,0,0,0.2)); background-size: 100% 4px; pointer-events: none; }
+        /* Scrollbar hiding for cleaner look */
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #18181b; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+
+        /* Global tooltip */
+        #global-tooltip {
+            position: fixed;
+            background: rgba(10, 10, 15, 0.95);
+            border: 1px solid #06b6d4;
+            color: #ecfeff;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            pointer-events: none;
+            z-index: 9999;
+            max-width: 250px;
+            box-shadow: 0 0 10px rgba(6, 182, 212, 0.2);
+            display: none;
+            backdrop-filter: blur(4px);
+            line-height: 1.4;
+        }
+
+        #global-tooltip strong {
+            display: block;
+            color: #22d3ee;
+            margin-bottom: 4px;
+            border-bottom: 1px solid #164e63;
+            padding-bottom: 2px;
+        }
     </style>
 </head>
 <body class="h-screen flex flex-col p-4 overflow-hidden bg-zinc-950">
+    <div id="global-tooltip"></div>
 
     <div class="flex justify-between items-center mb-4 border-b border-zinc-800 pb-2">
         <div>
-            <h1 class="text-cyan-400 font-bold text-xl tracking-wider">QUANTUM RAT v3.4</h1>
+            <h1 class="text-cyan-400 font-bold text-xl tracking-wider">QUANTUM RAT v3.5</h1>
             <span class="text-xs text-cyan-700">Orch-OR Biomimetic Agent // Hebbian Plasticity</span>
         </div>
         <div class="flex gap-2 items-center">
@@ -48,183 +81,172 @@
             <div id="pip-label">SENSORY: VIBRISSAL (8Hz)</div>
         </div>
 
-        <div class="w-96 flex flex-col gap-4 overflow-y-auto pr-2 custom-scrollbar">
-            <div class="flex flex-col gap-2">
-                <div class="flex gap-2">
-                    <div class="bg-zinc-900 p-2 rounded border border-zinc-800 flex-1 group relative">
-                         <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest">Soma (Decision)</h3>
-                        <canvas id="cvs-brain" width="64" height="13" class="w-full h-12 bg-black border border-zinc-800"></canvas>
-                        <div class="absolute bottom-full left-0 mb-2 w-full p-2 bg-zinc-800/95 border border-cyan-500/50 text-[10px] text-cyan-100 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 backdrop-blur-sm">
-                            <strong class="text-cyan-400 block mb-1">Substrate: Microtubules</strong>
-                            Visualizes quantum dipole oscillations. Bright spots indicate high coherence ($S_R$) leading to 'Orch OR' collapse events that drive motor decisions.
+        <div class="w-96 flex flex-col bg-zinc-950 border-l border-zinc-900 pl-4">
+            
+            <div class="flex gap-4 mb-4 border-b border-zinc-800">
+                <button class="tab-btn active" onclick="setTab('monitor')" id="tab-btn-monitor">Monitor</button>
+                <button class="tab-btn" onclick="setTab('controls')" id="tab-btn-controls">Controls</button>
+                <button class="tab-btn" onclick="setTab('research')" id="tab-btn-research">Research</button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto custom-scrollbar pr-2 relative">
+                
+                <div id="view-monitor" class="flex flex-col gap-4">
+                    <div class="flex flex-col gap-2">
+                        <div class="flex gap-2">
+                            <div class="bg-zinc-900 p-2 rounded border border-zinc-800 flex-1 group relative" data-tip="soma">
+                                <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest">Soma (Decision)</h3>
+                                <canvas id="cvs-brain" width="64" height="13" class="w-full h-12 bg-black border border-zinc-800"></canvas>
+                            </div>
+                            <div class="bg-zinc-900 p-2 rounded border border-zinc-800 flex-1 group relative" data-tip="theta">
+                                <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest">Theta (Memory)</h3>
+                                <canvas id="cvs-mem" width="64" height="13" class="w-full h-12 bg-black border border-zinc-800"></canvas>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <div class="bg-zinc-900 p-2 rounded border border-zinc-800 relative flex-1" data-tip="grid">
+                                <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest">Entorhinal Grid</h3>
+                                <canvas id="cvs-grid" width="32" height="32" class="w-full h-24 bg-black border border-zinc-800 image-pixelated"></canvas>
+                                <div class="absolute inset-0 scanlines opacity-50"></div>
+                            </div>
+                            <div class="bg-zinc-900 p-2 rounded border border-zinc-800 relative w-24 flex flex-col items-center" data-tip="hd">
+                                <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest text-center">HD Compass</h3>
+                                <canvas id="cvs-hd" width="64" height="64" class="w-20 h-20 bg-black border border-zinc-800 rounded-full"></canvas>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="bg-zinc-900 p-2 rounded border border-zinc-800 flex-1 group relative">
-                         <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest">Theta (Memory)</h3>
-                        <canvas id="cvs-mem" width="64" height="13" class="w-full h-12 bg-black border border-zinc-800"></canvas>
-                        <div class="absolute bottom-full left-0 mb-2 w-full p-2 bg-zinc-800/95 border border-purple-500/50 text-[10px] text-purple-100 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 backdrop-blur-sm">
-                            <strong class="text-purple-400 block mb-1">Substrate: Hippocampus</strong>
-                            Time-encoded lattice. Activity here represents Synaptic Tagging & Capture (STC), binding sequences of events for long-term consolidation.
+                    <div class="bg-zinc-900 p-4 rounded border border-zinc-800 space-y-3" data-tip="physio">
+                         <div>
+                             <div class="flex justify-between text-xs mb-1"><span class="text-orange-500 font-semibold">FRUSTRATION</span><span id="val-frust" class="text-orange-300">0.00</span></div>
+                            <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-frust" class="h-full bg-gradient-to-r from-orange-600 to-orange-400 w-0 transition-all duration-200"></div></div>
+                        </div>
+                         <div>
+                            <div class="flex justify-between text-xs mb-1 pt-1"><span class="text-blue-500 font-semibold">DOPAMINE</span><span id="val-dopa" class="text-blue-300">0.20</span></div>
+                           <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-dopa" class="h-full bg-gradient-to-r from-blue-600 to-blue-400 w-0 transition-all duration-200"></div></div>
+                       </div>
+                        <div class="pt-2 border-t border-zinc-800/50">
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-purple-400 font-semibold">GLYCOGEN</span><span id="val-energy" class="text-purple-300">100%</span>
+                            </div>
+                            <div class="h-2 bg-zinc-800 rounded overflow-hidden relative mb-2">
+                                <div id="bar-energy" class="h-full bg-purple-600 w-full transition-all duration-200"></div>
+                            </div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-yellow-400 font-semibold">NEURONAL ATP</span><span id="val-atp" class="text-yellow-300">100%</span>
+                            </div>
+                            <div class="h-2 bg-zinc-800 rounded overflow-hidden relative">
+                                <div id="bar-atp" class="h-full bg-yellow-400 w-full transition-all duration-200 shadow-[0_0_10px_yellow]"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-4 gap-2 text-center">
+                        <div class="bg-zinc-950 p-2 rounded border border-zinc-800"><div class="text-[10px] text-zinc-500 uppercase">Score</div><div id="val-score" class="text-xl font-bold text-green-400">0</div></div>
+                        <div class="bg-zinc-950 p-2 rounded border border-zinc-800"><div class="text-[10px] text-zinc-500 uppercase">Gen</div><div id="val-gen" class="text-xl font-bold text-purple-400">1</div></div>
+                        <div class="bg-zinc-950 p-2 rounded border border-zinc-800"><div class="text-[10px] text-zinc-500 uppercase">Deaths</div><div id="val-deaths" class="text-xl font-bold text-red-400">0</div></div>
+                        <div class="bg-zinc-950 p-2 rounded border border-cyan-900/50"><div class="text-[10px] text-zinc-500 uppercase">Mems</div><div id="val-mems" class="text-xl font-bold text-blue-400">0</div></div>
+                   </div>
+                </div>
+
+                <div id="view-controls" class="hidden flex-col gap-4">
+                     <div class="bg-zinc-900 p-3 rounded border border-zinc-800">
+                         <h3 class="text-[10px] text-zinc-500 mb-3 uppercase tracking-widest border-b border-zinc-800 pb-1">Simulation Config</h3>
+                         
+                         <label class="text-xs text-zinc-400 flex justify-between" data-tip="speed"><span>Speed</span> <span id="speed-val">1x</span></label>
+                        <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-2" min="1" max="10" value="1" oninput="updateConfig('speed', this.value); document.getElementById('speed-val').innerText = this.value + 'x'">
+                        
+                        <label class="text-xs text-zinc-400 flex justify-between mt-4" data-tip="anesthesia"><span>Anesthesia</span> <span id="anes-val">0.0</span></label>
+                        <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-2" min="0" max="1" step="0.1" value="0" oninput="updateConfig('anesthetic', this.value); document.getElementById('anes-val').innerText = this.value">
+
+                        <label class="text-xs text-zinc-400 flex justify-between mt-4" data-tip="downsample"><span>Downsample</span> <span id="ds-val">1x</span></label>
+                        <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-2" min="1" max="4" step="1" value="1" oninput="updateConfig('downsample', this.value); document.getElementById('ds-val').innerText = this.value + 'x'">
+                        
+                        <div class="flex items-center gap-2 mt-4 pt-2 border-t border-zinc-800">
+                            <input type="checkbox" id="chk-pip" checked class="accent-cyan-500">
+                            <label for="chk-pip" class="text-xs text-zinc-400">Show Rat Vision (PiP)</label>
+                        </div>
+                    </div>
+
+                     <div class="bg-zinc-900 p-3 rounded border border-zinc-800">
+                        <h3 class="text-[10px] text-zinc-500 mb-3 uppercase tracking-widest border-b border-zinc-800 pb-1">Component Ablation</h3>
+                        
+                        <label class="text-xs text-zinc-400 flex justify-between" data-tip="cerebellum"><span class="text-cyan-400">Cerebellum</span> <span id="cer-val">1.0</span></label>
+                        <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1 mb-3" min="0" max="2" step="0.1" value="1" oninput="updateConfig('cerebellum_gain', this.value); document.getElementById('cer-val').innerText = this.value">
+
+                        <label class="text-xs text-zinc-400 flex justify-between" data-tip="hippocampus"><span class="text-purple-400">Hippocampus</span> <span id="mem-val">1.0</span></label>
+                        <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1 mb-3" min="0" max="3" step="0.1" value="1" oninput="updateConfig('memory_gain', this.value); document.getElementById('mem-val').innerText = this.value">
+
+                        <label class="text-xs text-zinc-400 flex justify-between" data-tip="amygdala"><span class="text-red-400">Amygdala</span> <span id="fear-val">1.0</span></label>
+                        <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1 mb-3" min="0" max="5" step="0.1" value="1" oninput="updateConfig('fear_gain', this.value); document.getElementById('fear-val').innerText = this.value">
+                        
+                        <div class="flex items-center justify-between mt-1" data-tip="energy_chk">
+                            <label class="text-xs text-yellow-400">Metabolic Limits</label>
+                            <input type="checkbox" id="chk-energy" checked class="accent-yellow-500" onchange="updateConfig('energy_constraint', this.checked ? 1.0 : 0.0)">
+                        </div>
+
+                        <div class="mt-4 border-t border-zinc-800/50 pt-3 space-y-3">
+                          <h4 class="text-[10px] text-zinc-500 uppercase tracking-widest">Sensory Pathway</h4>
+                          <div class="flex items-center justify-between"><label class="text-xs text-cyan-300">Sensory Cortex</label><input type="checkbox" id="chk-sensory" class="accent-cyan-500" onchange="updateConfig('enable_sensory_cortex', this.checked ? 1.0 : 0.0)"></div>
+                          <div class="flex items-center justify-between"><label class="text-xs text-green-300">Thalamus Relay</label><input type="checkbox" id="chk-thalamus" class="accent-green-500" onchange="updateConfig('enable_thalamus', this.checked ? 1.0 : 0.0)"></div>
+                          <label class="text-xs text-zinc-400 flex justify-between"><span class="text-yellow-300">Blend (Old ↔ New)</span><span id="blend-val">0.0</span></label>
+                          <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1" min="0" max="1" step="0.05" value="0" oninput="updateConfig('sensory_blend', this.value); document.getElementById('blend-val').innerText = this.value">
+                        </div>
+
+                        <div class="mt-4 border-t border-zinc-800/50 pt-3 space-y-3">
+                          <h4 class="text-[10px] text-zinc-500 uppercase tracking-widest">Hippocampal Replay</h4>
+
+                          <div class="flex items-center justify-between" data-tip="replay_enable">
+                            <label class="text-xs text-emerald-300">Enable Replay</label>
+                            <input type="checkbox" id="chk-replay" class="accent-emerald-500"
+                                   onchange="updateConfig('enable_replay', this.checked ? 1.0 : 0.0)">
+                          </div>
+
+                          <label class="text-xs text-zinc-400 flex justify-between" data-tip="replay_strength">
+                            <span class="text-emerald-300">Replay Strength</span><span id="replay-strength-val">0.15</span>
+                          </label>
+                          <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1"
+                                 min="0" max="1" step="0.05" value="0.15"
+                                 oninput="updateConfig('replay_strength', this.value); document.getElementById('replay-strength-val').innerText = this.value">
+
+                          <label class="text-xs text-zinc-400 flex justify-between" data-tip="replay_steps">
+                            <span class="text-emerald-300">Replay Steps</span><span id="replay-steps-val">6</span>
+                          </label>
+                          <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1"
+                                 min="0" max="20" step="1" value="6"
+                                 oninput="updateConfig('replay_steps', this.value); document.getElementById('replay-steps-val').innerText = this.value">
                         </div>
                     </div>
                 </div>
-                <div class="flex gap-2">
-                    <div class="bg-zinc-900 p-2 rounded border border-zinc-800 relative flex-1 group">
-                         <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest">Entorhinal Grid</h3>
-                        <canvas id="cvs-grid" width="32" height="32" class="w-full h-24 bg-black border border-zinc-800 image-pixelated"></canvas>
-                        <div class="absolute inset-0 scanlines opacity-50"></div>
-                        <div class="absolute bottom-full left-0 mb-2 w-full p-2 bg-zinc-800/95 border border-green-500/50 text-[10px] text-green-100 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 backdrop-blur-sm">
-                            <strong class="text-green-400 block mb-1">Substrate: Entorhinal Cortex</strong>
-                            Hexagonal firing fields that provide a metric coordinate system for path integration and spatial mapping.
+
+                <div id="view-research" class="hidden flex-col gap-4">
+                     <div class="bg-zinc-900 p-4 rounded border border-blue-900/50 relative overflow-hidden" data-tip="learning_curve">
+                        <div class="absolute top-0 right-0 p-1"><span class="text-[10px] bg-blue-900 text-blue-200 px-1 rounded">RESEARCH MODE</span></div>
+                        <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest font-bold">Spatial Learning Assay</h3>
+                        
+                        <div class="flex gap-2 mb-3">
+                            <button onclick="toggleLab(true)" id="btn-start-lab" class="flex-1 btn bg-blue-900/20 text-blue-400 border-blue-800 hover:bg-blue-800/30 text-xs">Run Latency Test</button>
+                            <button onclick="toggleLab(false)" id="btn-stop-lab" class="flex-1 btn bg-red-900/20 text-red-400 border-red-800 hover:bg-red-800/30 text-xs hidden">Abort Test</button>
+                        </div>
+
+                        <div class="relative bg-black border border-zinc-800 rounded w-full">
+                            <canvas id="cvs-learning-curve" width="350" height="200" class="w-full"></canvas>
+                            <div id="lab-overlay" class="absolute inset-0 flex items-center justify-center text-zinc-600 text-xs pointer-events-none">NO DATA</div>
+                        </div>
+                        <p class="text-[10px] text-zinc-500 mt-2">Hypothesis: If <span class="text-green-400">Time-to-Target</span> decreases, spatial memory is forming.</p>
+                    </div>
+
+                    <div class="bg-zinc-900 p-3 rounded border border-zinc-800 group relative" data-tip="genetic_graph">
+                        <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest">Genetic Drifts</h3>
+                        <canvas id="cvs-graph" width="350" height="150" class="w-full bg-zinc-950 border border-zinc-800/50 rounded"></canvas>
+                        <div class="mt-2 text-[10px] text-zinc-500 flex gap-4 justify-center">
+                            <span class="text-red-400">● Amygdala</span>
+                            <span class="text-blue-400">● Striatum</span>
+                            <span class="text-green-400">● Hippocampus</span>
                         </div>
                     </div>
-                
-                    <div class="bg-zinc-900 p-2 rounded border border-zinc-800 relative w-24 flex flex-col items-center group">
-                         <h3 class="text-[10px] text-zinc-500 mb-1 uppercase tracking-widest text-center">HD Compass</h3>
-                        <canvas id="cvs-hd" width="64" height="64" class="w-20 h-20 bg-black border border-zinc-800 rounded-full"></canvas>
-                        <div class="absolute bottom-full right-0 mb-2 w-48 p-2 bg-zinc-800/95 border border-yellow-500/50 text-[10px] text-yellow-100 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 backdrop-blur-sm">
-                            <strong class="text-yellow-400 block mb-1">Substrate: Postsubiculum</strong>
-                            Ring attractor network maintaining Head Direction (HD) via vestibular integration.
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="bg-zinc-900 p-4 rounded border border-zinc-800 space-y-3 relative overflow-hidden">
-                <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-cyan-900/50 to-transparent"></div>
-                
-                <div>
-                     <div class="flex justify-between text-xs mb-1"><span class="text-orange-500 font-semibold">FRUSTRATION</span><span id="val-frust" class="text-orange-300">0.00</span></div>
-                    <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-frust" class="h-full bg-gradient-to-r from-orange-600 to-orange-400 w-0 transition-all duration-200"></div></div>
                 </div>
 
-                 <div>
-                    <div class="flex justify-between text-xs mb-1 pt-1"><span class="text-blue-500 font-semibold">DOPAMINE</span><span id="val-dopa" class="text-blue-300">0.20</span></div>
-                   <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-dopa" class="h-full bg-gradient-to-r from-blue-600 to-blue-400 w-0 transition-all duration-200"></div></div>
-               </div>
-
-                <div class="pt-2 border-t border-zinc-800/50">
-                    <div class="flex justify-between text-xs mb-1">
-                        <span class="text-purple-400 font-semibold">GLYCOGEN (Reserves)</span>
-                        <span id="val-energy" class="text-purple-300">100%</span>
-                    </div>
-                    <div class="h-2 bg-zinc-800 rounded overflow-hidden relative mb-2">
-                        <div id="bar-energy" class="h-full bg-purple-600 w-full transition-all duration-200"></div>
-                    </div>
-                
-                    <div class="flex justify-between text-xs mb-1">
-                        <span class="text-yellow-400 font-semibold">NEURONAL ATP (Flux)</span>
-                        <span id="val-atp" class="text-yellow-300">100%</span>
-                    </div>
-                    <div class="h-2 bg-zinc-800 rounded overflow-hidden relative">
-                        <div id="bar-atp" class="h-full bg-yellow-400 w-full transition-all duration-200 shadow-[0_0_10px_yellow]"></div>
-                    </div>
-                </div>
-
-               <div class="grid grid-cols-4 gap-2 pt-2 text-center">
-                    <div class="bg-zinc-950 p-2 rounded border border-zinc-800"><div class="text-[10px] text-zinc-500 uppercase">Score</div><div id="val-score" class="text-xl font-bold text-green-400">0</div></div>
-                    <div class="bg-zinc-950 p-2 rounded border border-zinc-800"><div class="text-[10px] text-zinc-500 uppercase">Gen</div><div id="val-gen" class="text-xl font-bold text-purple-400">1</div></div>
-                    <div class="bg-zinc-950 p-2 rounded border border-zinc-800"><div class="text-[10px] text-zinc-500 uppercase">Deaths</div><div id="val-deaths" class="text-xl font-bold text-red-400">0</div></div>
-                    <div class="bg-zinc-950 p-2 rounded border border-cyan-900/50"><div class="text-[10px] text-zinc-500 uppercase">Mems</div><div id="val-mems" class="text-xl font-bold text-blue-400">0</div></div>
-               </div>
-            </div>
-
-             <div class="bg-zinc-900 p-3 rounded border border-zinc-800 group relative">
-                <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest">Genetic Drifts</h3>
-                <canvas id="cvs-graph" width="300" height="80" class="w-full h-24 bg-zinc-950 border border-zinc-800/50 rounded"></canvas>
-                <div class="absolute bottom-full left-0 mb-2 w-full p-2 bg-zinc-800/95 border border-blue-500/50 text-[10px] text-blue-100 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 backdrop-blur-sm">
-                    <strong class="text-blue-400 block mb-1">Substrate: Basal Ganglia Weights</strong>
-                    Tracks the evolution of gating policies. <br>
-                    <span class="text-red-400">Red: Amygdala (Fear)</span><br>
-                    <span class="text-blue-400">Blue: Striatum (Greed)</span><br>
-                    <span class="text-green-400">Green: Hippocampus (Curiosity)</span>
-                </div>
-            </div>
-
-             <div class="bg-zinc-900 p-3 rounded border border-zinc-800">
-                 <label class="text-xs text-zinc-400 flex justify-between"><span>Simulation Speed</span> <span id="speed-val">1x</span></label>
-                <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-2" min="1" max="10" value="1" oninput="updateConfig('speed', this.value); document.getElementById('speed-val').innerText = this.value + 'x'">
-                
-                <label class="text-xs text-zinc-400 flex justify-between mt-2">
-                    <span>Anesthesia (Isoflurane)</span> <span id="anes-val">0.0</span>
-                </label>
-                <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-2" 
-                       min="0" max="1" step="0.1" value="0" 
-                       oninput="updateConfig('anesthetic', this.value); document.getElementById('anes-val').innerText = this.value">
-
-                <label class="text-xs text-zinc-400 flex justify-between mt-3">
-                  <span>Downsample (Brain JSON)</span> <span id="ds-val">1x</span>
-                </label>
-                <input
-                  type="range"
-                  class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-2"
-                  min="1" max="4" step="1" value="1"
-                  oninput="updateConfig('downsample', this.value); document.getElementById('ds-val').innerText = this.value + 'x'">
-
-                <div class="flex items-center gap-2 mt-4">
-                    <input type="checkbox" id="chk-pip" checked class="accent-cyan-500">
-                    <label for="chk-pip" class="text-xs text-zinc-400">Show Rat Vision (PiP)</label>
-                </div>
-            </div>
-
-             <div class="bg-zinc-900 p-3 rounded border border-zinc-800 mt-2">
-                <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest border-b border-zinc-800 pb-1">Component Ablation</h3>
-                
-                <label class="text-xs text-zinc-400 flex justify-between">
-                    <span class="text-cyan-400">Cerebellum (Motor Fine-tuning)</span> 
-                    <span id="cer-val">1.0</span>
-                </label>
-                <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1 mb-3" 
-                       min="0" max="2" step="0.1" value="1" 
-                       oninput="updateConfig('cerebellum_gain', this.value); document.getElementById('cer-val').innerText = this.value">
-
-                <label class="text-xs text-zinc-400 flex justify-between">
-                    <span class="text-purple-400">Hippocampus (Memory Bias)</span> 
-                    <span id="mem-val">1.0</span>
-                </label>
-                <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1 mb-3" 
-                       min="0" max="3" step="0.1" value="1" 
-                       oninput="updateConfig('memory_gain', this.value); document.getElementById('mem-val').innerText = this.value">
-
-                <label class="text-xs text-zinc-400 flex justify-between">
-                    <span class="text-red-400">Amygdala (Fear Response)</span> 
-                    <span id="fear-val">1.0</span>
-                </label>
-                <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1 mb-3" 
-                       min="0" max="5" step="0.1" value="1" 
-                       oninput="updateConfig('fear_gain', this.value); document.getElementById('fear-val').innerText = this.value">
-                
-                <div class="flex items-center justify-between mt-1">
-                    <label class="text-xs text-yellow-400">Metabolic Limits (Starvation)</label>
-                    <input type="checkbox" id="chk-energy" checked 
-                           class="accent-yellow-500"
-                           onchange="updateConfig('energy_constraint', this.checked ? 1.0 : 0.0)">
-                </div>
-
-                <div class="mt-4 border-t border-zinc-800/50 pt-3 space-y-3">
-                  <h4 class="text-[10px] text-zinc-500 uppercase tracking-widest">Sensory Pathway</h4>
-
-                  <div class="flex items-center justify-between">
-                    <label class="text-xs text-cyan-300">Enable Sensory Cortex (V1/S1)</label>
-                    <input type="checkbox" id="chk-sensory" class="accent-cyan-500"
-                           onchange="updateConfig('enable_sensory_cortex', this.checked ? 1.0 : 0.0)">
-                  </div>
-
-                  <div class="flex items-center justify-between">
-                    <label class="text-xs text-green-300">Enable Thalamus Relay</label>
-                    <input type="checkbox" id="chk-thalamus" class="accent-green-500"
-                           onchange="updateConfig('enable_thalamus', this.checked ? 1.0 : 0.0)">
-                  </div>
-
-                  <label class="text-xs text-zinc-400 flex justify-between">
-                    <span class="text-yellow-300">Blend (Old ↔ New)</span>
-                    <span id="blend-val">0.0</span>
-                  </label>
-                  <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1"
-                         min="0" max="1" step="0.05" value="0"
-                         oninput="updateConfig('sensory_blend', this.value); document.getElementById('blend-val').innerText = this.value">
-                </div>
             </div>
         </div>
     </div>
@@ -232,6 +254,78 @@
 <script type="module">
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // --- TOOLTIP TEXT DICTIONARY ---
+    const TOOLTIP_TEXT = {
+        "soma": {
+            title: "Executive Soma",
+            text: "Visualizes quantum dipole coherence in microtubules. Bright spots indicate 'Orch OR' collapse events that drive motor decisions."
+        },
+        "theta": {
+            title: "Theta Memory (Hippocampus)",
+            text: "Time-encoded lattice representing Short-Term Memory. Activity here tracks synaptic tagging and sequential event capture."
+        },
+        "grid": {
+            title: "Entorhinal Grid Cells",
+            text: "Hexagonal firing fields providing a metric coordinate system for path integration and spatial mapping."
+        },
+        "hd": {
+            title: "Head Direction (Postsubiculum)",
+            text: "A ring-attractor network acting as a neural compass. The green line indicates the rat's belief of 'North'."
+        },
+        "physio": {
+            title: "Physiological State",
+            text: "Real-time tracking of biological variables. High frustration drives exploration; Dopamine reinforces learning; ATP limits physical movement."
+        },
+        "speed": {
+            title: "Simulation Speed",
+            text: "Controls the number of physics steps calculated per frame. Higher values train faster but may lower frame rate."
+        },
+        "anesthesia": {
+            title: "Anesthetic (Isoflurane)",
+            text: "Dampens quantum coherence in microtubules. At high levels, consciousness ceases, and the rat will stop moving."
+        },
+        "downsample": {
+            title: "Data Downsampling",
+            text: "Reduces the resolution of brain data sent from Python to JS. Increase this if the simulation is lagging."
+        },
+        "cerebellum": {
+            title: "Cerebellum Gain",
+            text: "Modulates fine motor control. 0.0 results in clumsy/jittery movement; 1.0 results in smooth, predicted trajectories."
+        },
+        "hippocampus": {
+            title: "Hippocampus Weight",
+            text: "Controls how much the rat relies on memory vs. immediate sensory input. High values favor learned paths."
+        },
+        "amygdala": {
+            title: "Amygdala Weight",
+            text: "Controls the fear response to predators. High values cause the rat to prioritize safety over food."
+        },
+        "energy_chk": {
+            title: "Metabolic Constraints",
+            text: "If enabled, the rat can die of starvation (0% ATP). If disabled, the rat has infinite energy."
+        },
+        "learning_curve": {
+            title: "Latency Analysis",
+            text: "Plots the time (in frames) taken to find the target across repeated trials. A downward slope indicates successful spatial learning."
+        },
+        "genetic_graph": {
+            title: "Evolutionary History",
+            text: "Tracks the genetic weights of the brain over generations. Use this to see if the population is becoming more fearful or more greedy."
+        },
+        "replay_enable": {
+            title: "Hippocampal Replay",
+            text: "During microsleep, replays recent hippocampal state snapshots to consolidate learning (offline)."
+        },
+        "replay_strength": {
+            title: "Replay Strength",
+            text: "How strongly replay nudges consolidation. Keep small to avoid destabilising online behaviour."
+        },
+        "replay_steps": {
+            title: "Replay Steps",
+            text: "How many snapshots replayed per microsleep. More = stronger offline learning, but heavier compute."
+        }
+    };
 
     let running = true;
     let turboMode = false;
@@ -241,12 +335,29 @@
     let turboBatch = 200;   // practical ceiling
     let normalMaxSpeed = 10;
 
+    // --- TAB SYSTEM ---
+    window.setTab = function(tabName) {
+        // Toggle Buttons
+        ['monitor', 'controls', 'research'].forEach(t => {
+            const btn = document.getElementById(`tab-btn-${t}`);
+            const view = document.getElementById(`view-${t}`);
+            
+            if(t === tabName) {
+                btn.classList.add('active');
+                view.classList.remove('hidden');
+                view.classList.add('flex');
+            } else {
+                btn.classList.remove('active');
+                view.classList.add('hidden');
+                view.classList.remove('flex');
+            }
+        });
+    };
+
     async function setTurboMode(on) {
       turboMode = on;
       const btn = document.getElementById('btn-turbo');
       btn.innerText = turboMode ? "⚡ TRAINING..." : "⚡ Hyper-Train";
-
-      // backend clamps batch_size to max_speed, so lift the ceiling during turbo
       await fetch('/config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -293,14 +404,12 @@
     const matTarget = new THREE.MeshPhongMaterial({ color: 0xffd700, emissive: 0xffaa00, emissiveIntensity: 0.8 });
     const matPheromone = new THREE.MeshBasicMaterial({ color: 0x00ff66 });
     const matPhantom = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.2, wireframe: true });
-    // NEW: Memory Material (Holographic Blue)
     const matMemory = new THREE.MeshBasicMaterial({ color: 0x0088ff, wireframe: true, transparent: true, opacity: 0.6 });
     const matVisionCone = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.05, side: THREE.DoubleSide });
 
     let wallsInstancedMesh, wireframeBox;
     let ratMesh, predatorMesh, targetMeshes, targetLights;
     let pheromoneMeshes = [], phantomMeshes = [];
-    // NEW: Store memory objects
     let memoryObjects = [];
     let leftWhisker, rightWhisker;
     let visionGroup;
@@ -337,7 +446,7 @@
 
         targetMeshes = [];
         targetLights = [];
-        for(let i = 0; i < 3; i++) { // Initialize 3 target meshes and lights
+        for(let i = 0; i < 3; i++) { 
             const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 16), matTarget);
             const light = new THREE.PointLight(0xffaa00, 1, 10);
             mesh.add(light);
@@ -355,43 +464,32 @@
             phMesh.visible = false; scene.add(phMesh); phantomMeshes.push(phMesh);
         }
 
-    // --- NEW: VIBRISSAE SETUP ---
-    // Create Geometry for whiskers (lines)
-    const whiskerMat = new THREE.LineBasicMaterial({ color: 0xaaaaaa });
-    const geometry = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 0, 4) // Length 4
-    ]);
+        const whiskerMat = new THREE.LineBasicMaterial({ color: 0xaaaaaa });
+        const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 4)]);
+        leftWhisker = new THREE.Line(geometry, whiskerMat.clone());
+        leftWhisker.position.set(-0.2, 0, 0.5); 
+        ratMesh.add(leftWhisker);
+        rightWhisker = new THREE.Line(geometry, whiskerMat.clone());
+        rightWhisker.position.set(0.2, 0, 0.5);
+        ratMesh.add(rightWhisker);
 
-    leftWhisker = new THREE.Line(geometry, whiskerMat.clone());
-    leftWhisker.position.set(-0.2, 0, 0.5); // Offset from nose
-    ratMesh.add(leftWhisker);
-
-    rightWhisker = new THREE.Line(geometry, whiskerMat.clone());
-    rightWhisker.position.set(0.2, 0, 0.5);
-    ratMesh.add(rightWhisker);
-
-    // --- NEW: RETINAL RAYS ---
-    visionGroup = new THREE.Group();
-    ratMesh.add(visionGroup);
-    const lineMat = new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.5 });
-    for(let i=0; i<12; i++) {
-        const geo = new THREE.BufferGeometry().setFromPoints([ new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,1) ]);
-        const line = new THREE.Line(geo, lineMat.clone());
-        visionLines.push(line);
-        visionGroup.add(line);
-    }
+        visionGroup = new THREE.Group();
+        ratMesh.add(visionGroup);
+        const lineMat = new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.5 });
+        for(let i=0; i<12; i++) {
+            const geo = new THREE.BufferGeometry().setFromPoints([ new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,1) ]);
+            const line = new THREE.Line(geo, lineMat.clone());
+            visionLines.push(line);
+            visionGroup.add(line);
+        }
     }
 
     function buildWalls(walls) {
         if(wallsInstancedMesh) { scene.remove(wallsInstancedMesh); scene.remove(wireframeBox); }
-        
         const boxGeo = new THREE.BoxGeometry(1, 1, 1);
         const edges = new THREE.EdgesGeometry(boxGeo);
-
         wallsInstancedMesh = new THREE.InstancedMesh(boxGeo, matWall, walls.length);
         wallsInstancedMesh.castShadow = true; wallsInstancedMesh.receiveShadow = true;
-
         const dummy = new THREE.Object3D();
         walls.forEach((w, i) => {
             dummy.position.set(w[0], 0.5, w[1]); dummy.updateMatrix();
@@ -399,7 +497,6 @@
         });
         wallsInstancedMesh.instanceMatrix.needsUpdate = true;
         scene.add(wallsInstancedMesh);
-        
         wireframeBox = new THREE.InstancedMesh(edges, matWallWire, walls.length);
         walls.forEach((w, i) => {
              dummy.position.set(w[0], 0.5, w[1]); dummy.updateMatrix();
@@ -409,15 +506,13 @@
         scene.add(wireframeBox);
     }
     
-    // NEW: Function to spawn a Memory Marker
     function spawnMemoryMarker(pos) {
         const geo = new THREE.OctahedronGeometry(0.4, 0);
         const mesh = new THREE.Mesh(geo, matMemory);
-        mesh.position.set(pos.x, 1.0, pos.z); // Float higher than rat
+        mesh.position.set(pos.x, 1.0, pos.z); 
         scene.add(mesh);
         memoryObjects.push(mesh);
     }
-    
     function clearMemories() {
         memoryObjects.forEach(m => scene.remove(m));
         memoryObjects = [];
@@ -430,8 +525,13 @@
     const ctxMem = document.getElementById('cvs-mem').getContext('2d');
     const ctxGrid = document.getElementById('cvs-grid').getContext('2d');
     const ctxHD = document.getElementById('cvs-hd').getContext('2d');
+    
     const cvsGraph = document.getElementById('cvs-graph');
     const ctxGraph = cvsGraph.getContext('2d');
+    
+    const cvsLearning = document.getElementById('cvs-learning-curve');
+    const ctxLearning = cvsLearning.getContext('2d');
+    let isLabActive = false;
 
     function resizeThree() {
         const w = container.clientWidth, h = container.clientHeight;
@@ -444,7 +544,6 @@
         if(!data || !data.length) return;
         const w = data[0].length, h = data.length;
         if(ctx.canvas.width !== w) { ctx.canvas.width = w; ctx.canvas.height = h; }
-        
         const img = ctx.createImageData(w, h);
         for(let i=0; i<h; i++) {
             for(let j=0; j<w; j++) {
@@ -473,6 +572,78 @@
             ctxGraph.stroke();
         };
         drawLine('Amygdala', '#f87171'); drawLine('Striatum', '#60a5fa'); drawLine('Hippocampus', '#34d399');
+    }
+
+    window.toggleLab = async function(start) {
+        const endpoint = start ? '/lab/start' : '/lab/stop';
+        await fetch(endpoint, {method: 'POST'});
+        
+        document.getElementById('btn-start-lab').classList.toggle('hidden', start);
+        document.getElementById('btn-stop-lab').classList.toggle('hidden', !start);
+        
+        if(start) {
+            ctxLearning.clearRect(0,0, cvsLearning.width, cvsLearning.height);
+            document.getElementById('lab-overlay').innerText = "TRIAL 1 IN PROGRESS...";
+            isLabActive = true;
+            pollLabResults();
+        } else {
+            isLabActive = false;
+            resetRat(); 
+        }
+    }
+
+    async function pollLabResults() {
+        if(!isLabActive) return;
+        const res = await fetch('/lab/results');
+        const data = await res.json();
+        
+        if(!data.active && data.data.length > 0) {
+            isLabActive = false; 
+            document.getElementById('btn-start-lab').classList.remove('hidden');
+            document.getElementById('btn-stop-lab').classList.add('hidden');
+            document.getElementById('lab-overlay').innerText = "EXPERIMENT COMPLETE";
+        }
+        if(data.active) {
+            document.getElementById('lab-overlay').innerText = `RUNNING TRIAL ${data.current_trial}...`;
+            setTimeout(pollLabResults, 1000);
+        }
+        drawLearningCurve(data.data);
+    }
+
+    function drawLearningCurve(trials) {
+        if(!trials || trials.length === 0) return;
+        document.getElementById('lab-overlay').style.opacity = trials.length > 0 ? 0 : 1;
+        
+        const w = cvsLearning.width;
+        const h = cvsLearning.height;
+        const pad = 30;
+        
+        ctxLearning.clearRect(0, 0, w, h);
+        const maxFrames = Math.max(...trials.map(t => t.frames), 1000);
+        
+        ctxLearning.strokeStyle = '#444';
+        ctxLearning.lineWidth = 1;
+        ctxLearning.beginPath();
+        ctxLearning.moveTo(pad, pad);
+        ctxLearning.lineTo(pad, h-pad); 
+        ctxLearning.lineTo(w-pad, h-pad); 
+        ctxLearning.stroke();
+        
+        ctxLearning.strokeStyle = '#4ade80';
+        ctxLearning.lineWidth = 2;
+        ctxLearning.beginPath();
+        
+        const xStep = (w - (pad*2)) / (10 - 1); 
+        
+        trials.forEach((t, i) => {
+            const x = pad + (i * xStep);
+            const y = (h - pad) - ((t.frames / maxFrames) * (h - pad*2));
+            if (i === 0) ctxLearning.moveTo(x, y);
+            else ctxLearning.lineTo(x, y);
+            ctxLearning.fillStyle = '#fff';
+            ctxLearning.fillRect(x-2, y-2, 4, 4);
+        });
+        ctxLearning.stroke();
     }
 
     // --- LOOP ---
@@ -535,19 +706,10 @@
             }
 
             if (data.whiskers) {
-                // 1. Sync Rotation (Base angle +/- oscillation)
-                // Left starts at +45deg (0.78 rad), adds oscillation
                 leftWhisker.rotation.y = 0.78 + data.whiskers.angle;
-                
-                // Right starts at -45deg (-0.78 rad), subtracts oscillation (mirror)
                 rightWhisker.rotation.y = -0.78 - data.whiskers.angle;
-
-                // 2. Visual Feedback on Touch (Color Change)
-                // Left Hit?
                 leftWhisker.material.color.setHex(data.whiskers.hits[0] ? 0xff0000 : 0xaaaaaa);
                 leftWhisker.material.linewidth = data.whiskers.hits[0] ? 3 : 1;
-                
-                // Right Hit?
                 rightWhisker.material.color.setHex(data.whiskers.hits[1] ? 0xff0000 : 0xaaaaaa);
                 rightWhisker.material.linewidth = data.whiskers.hits[1] ? 3 : 1;
             }
@@ -560,11 +722,10 @@
                         line.visible = true;
                         line.rotation.y = ray.angle - ratAngle;
                         line.scale.z = ray.dist;
-                        
-                        let color = 0x00ffff; // Cyan for wall
-                        if(ray.type === 0) color = 0x444444; // Grey for empty
-                        if(ray.type === 2) color = 0xff0000; // Red for predator
-                        if(ray.type === 3) color = 0xffff00; // Yellow for target
+                        let color = 0x00ffff; 
+                        if(ray.type === 0) color = 0x444444; 
+                        if(ray.type === 2) color = 0xff0000; 
+                        if(ray.type === 3) color = 0xffff00; 
                         line.material.color.setHex(color);
                         line.material.opacity = ray.type === 0 ? 0.1 : 0.5;
                     } else {
@@ -573,22 +734,17 @@
                 });
             }
             
-            // NEW: MEMORY VISUALIZATION LOGIC
             const currentGen = data.stats.generation;
             if (currentGen > lastGen) {
-                clearMemories(); // New generation, clear short-term memories
+                clearMemories(); 
                 lastGen = currentGen;
                 lastScore = 0;
             }
-            
             const currentScore = data.stats.score;
             if (currentScore > lastScore) {
-                // Score increased -> Memory Formed at CURRENT location
                 spawnMemoryMarker(newRatPos);
                 lastScore = currentScore;
             }
-            
-            // Rotate Memory Markers
             memoryObjects.forEach(m => {
                 m.rotation.y += 0.02;
                 m.rotation.x += 0.01;
@@ -601,18 +757,14 @@
                 document.getElementById('val-dopa').innerText = stats.dopamine.toFixed(2);
                 document.getElementById('bar-dopa').style.width = (stats.dopamine*100) + '%';
                 
-                // Update Glycogen
                 document.getElementById('val-energy').innerText = Math.round(stats.energy * 100) + '%';
                 document.getElementById('bar-energy').style.width = (stats.energy * 100) + '%';
                 
-                // Update ATP
-                const atpVal = stats.atp || 0; // Default to 0 if undefined
-                // ATP can go > 1.0 due to mitochondrial efficiency boost
+                const atpVal = stats.atp || 0; 
                 const atpPercent = Math.min(100, Math.round(atpVal * 100)); 
                 document.getElementById('val-atp').innerText = atpPercent + '%';
                 document.getElementById('bar-atp').style.width = atpPercent + '%';
                 
-                // Visual Glitch effect if ATP is low (Consciousness fading)
                 if (atpVal < 0.3) {
                     document.body.style.filter = "grayscale(100%) blur(2px)";
                 } else {
@@ -622,7 +774,6 @@
                 document.getElementById('val-deaths').innerText = stats.deaths || 0;
                 document.getElementById('val-gen').innerText = stats.generation || 1;
                 document.getElementById('val-score').innerText = stats.score;
-                // Update Memory Count
                 document.getElementById('val-mems').innerText = memoryObjects.length;
             }
 
@@ -630,64 +781,42 @@
             statusEl.innerText = stats.status;
             statusEl.className = stats.status === "DREAMING" ? "absolute top-4 left-4 text-xl font-bold animate-pulse text-cyan-300 pointer-events-none" : "absolute top-4 left-4 text-sm font-bold text-cyan-700 pointer-events-none";
 
-            // Draw Brain Heatmaps
             drawHeatmap(ctxBrain, data.brain.soma, v => { const b = Math.min(255, v * 500); return [b, b*0.2, b*0.1]; });
             if(data.brain.theta) drawHeatmap(ctxMem, data.brain.theta, v => { const b = Math.min(255, v * 50); return [b*0.8, 0, b]; });
             
-            // --- DRAW HEAD DIRECTION RING ---
             if (data.brain.hd) {
                 const w = ctxHD.canvas.width;
                 const h = ctxHD.canvas.height;
                 const cx = w / 2;
                 const cy = h / 2;
                 const radius = w / 2 - 2;
-
                 ctxHD.clearRect(0, 0, w, h);
-                
-                // 1. Draw Ring Background
                 ctxHD.strokeStyle = '#222';
                 ctxHD.lineWidth = 2;
                 ctxHD.beginPath();
                 ctxHD.arc(cx, cy, radius * 0.7, 0, Math.PI * 2);
                 ctxHD.stroke();
 
-                // 2. Draw Activity Bump (The Neural Compass)
-                // The data is a list of 36 floats representing neuron firing rates
                 const cells = data.brain.hd;
                 const step = (Math.PI * 2) / cells.length;
-
                 ctxHD.beginPath();
                 for (let i = 0; i < cells.length; i++) {
-                    const activity = cells[i]; // 0.0 to 1.0
+                    const activity = cells[i]; 
                     if (activity < 0.01) continue;
-
-                    // Angle needs to be offset by -PI/2 to put index 0 at the top (North)
                     const angle = i * step - (Math.PI / 2); 
-                    
-                    // Calculate magnitude of the spoke
                     const mag = (radius * 0.5) + (activity * radius * 0.5);
-                    
                     const px = cx + Math.cos(angle) * mag;
                     const py = cy + Math.sin(angle) * mag;
-
-                    // Draw line from inner ring to activity edge
                     const ix = cx + Math.cos(angle) * (radius * 0.5);
                     const iy = cy + Math.sin(angle) * (radius * 0.5);
-
                     ctxHD.moveTo(ix, iy);
                     ctxHD.lineTo(px, py);
                 }
-                // Color correlates to orientation (Science!)
-                ctxHD.strokeStyle = '#00ff00'; // Green phosphor look
+                ctxHD.strokeStyle = '#00ff00'; 
                 ctxHD.lineWidth = 2;
                 ctxHD.stroke();
-
-                // 3. Draw Actual Head Heading (Visual Truth) for comparison
-                // We can infer this from the max activity or pass it in data.rat_heading if available
-                // For now, let's just trust the ring activity to visualize the brain state.
             }
 
-            // Draw Grid Cells (Green/Yellow scale)
             if(data.brain.grid) drawHeatmap(ctxGrid, data.brain.grid, v => { 
                 const g = Math.min(255, v * 255); 
                 return [g*0.2, g, 0]; 
@@ -723,23 +852,20 @@
         const res = await fetch('/reset', {method:'POST'});
         const data = await res.json();
         if(data.walls) buildWalls(data.walls);
-        clearMemories(); // Clear on reset
+        clearMemories(); 
         lastScore = 0;
         updateGraph();
     }
     window.loadGen = async function() {
       const id = document.getElementById('load-gen-input').value;
       if(!id) return;
-
       const res = await fetch('/load_generation', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ generation: id })
       });
-
       const data = await res.json();
       if (data.walls) buildWalls(data.walls);
-
       clearMemories();
       lastScore = 0;
       lastGen = parseInt(id, 10) || lastGen;
@@ -748,6 +874,39 @@
     window.updateConfig = async function(key, val) { await fetch('/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({[key]: parseFloat(val)}) }); }
     document.getElementById('btn-play').onclick = function() { running = !running; this.innerText = running ? "Pause" : "Resume"; };
     document.getElementById('btn-turbo').onclick = () => setTurboMode(!turboMode);
+
+    // --- TOOLTIP SYSTEM ---
+    const tooltipEl = document.getElementById('global-tooltip');
+
+    document.addEventListener('mouseover', (e) => {
+        const target = e.target.closest('[data-tip]');
+        if (target) {
+            const key = target.getAttribute('data-tip');
+            const data = TOOLTIP_TEXT[key];
+            if (data) {
+                tooltipEl.innerHTML = `<strong>${data.title}</strong>${data.text}`;
+                tooltipEl.style.display = 'block';
+            }
+        }
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (tooltipEl.style.display === 'block') {
+            let x = e.clientX + 15;
+            let y = e.clientY + 15;
+            if (x + 250 > window.innerWidth) x = e.clientX - 260;
+            if (y + 100 > window.innerHeight) y = e.clientY - 100;
+            tooltipEl.style.left = x + 'px';
+            tooltipEl.style.top = y + 'px';
+        }
+    });
+
+    document.addEventListener('mouseout', (e) => {
+        const target = e.target.closest('[data-tip]');
+        if (target) {
+            tooltipEl.style.display = 'none';
+        }
+    });
     
     resetRat();
     resizeThree();

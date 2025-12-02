@@ -6,6 +6,8 @@ import json
 import os
 import copy
 import csv
+import random
+from collections import deque
 from threading import Lock
 from typing import Any, Dict, List, Tuple
 
@@ -311,6 +313,53 @@ class PVLV_Learning:
         return float(dopamine)
 
 
+class LocusCoeruleus:
+    """
+    Simplified LC-NE system:
+    - tonic_ne: slow background arousal/uncertainty-driven exploration (0..1)
+    - phasic_ne: fast bursts to salient events (0..1)
+    Produces:
+      - arousal_boost: feeds TRN arousal
+      - attention_gain: scales thalamic relay gain
+      - explore_gain: scales motor noise / jitter -> exploration
+      - plasticity_gain: scales learning/plasticity modulation
+    """
+    def __init__(self):
+        self.tonic_ne = 0.2
+        self.phasic_ne = 0.0
+        self.reward_pred = 0.0  # crude expectation tracker
+        self.last = {"arousal_boost": 0.0, "attention_gain": 1.0, "explore_gain": 1.0, "plasticity_gain": 1.0}
+
+    def step(self, novelty: float, pain: float, reward: float, danger: float, dt: float = 0.05):
+        novelty = clamp(float(novelty), 0.0, 1.0)
+        pain    = clamp(float(pain), 0.0, 1.0)
+        reward  = clamp(float(reward), 0.0, 1.0)
+        danger  = clamp(float(danger), 0.0, 1.0)
+
+        surprise = abs(reward - self.reward_pred)
+        self.reward_pred = 0.98 * self.reward_pred + 0.02 * reward
+
+        salience = max(novelty, pain, danger, surprise)
+
+        self.phasic_ne = clamp(0.85 * self.phasic_ne + 0.35 * salience, 0.0, 1.0)
+
+        target_tonic = clamp(0.15 + 0.55 * novelty + 0.45 * danger + 0.25 * pain, 0.0, 1.0)
+        self.tonic_ne = clamp(0.98 * self.tonic_ne + 0.02 * target_tonic, 0.0, 1.0)
+
+        arousal_boost   = 0.6 * self.tonic_ne + 1.0 * self.phasic_ne
+        attention_gain  = clamp(0.7 + 0.7 * self.tonic_ne + 0.4 * self.phasic_ne, 0.5, 2.0)
+        explore_gain    = clamp(0.6 + 1.8 * self.tonic_ne, 0.2, 3.0)
+        plasticity_gain = clamp(0.8 + 1.0 * self.phasic_ne, 0.5, 2.0)
+
+        self.last = {
+            "arousal_boost": float(arousal_boost),
+            "attention_gain": float(attention_gain),
+            "explore_gain": float(explore_gain),
+            "plasticity_gain": float(plasticity_gain),
+        }
+        return self.last
+
+
 class VisionCortex:
     def __init__(self):
         self.ema_salience = 0.0
@@ -485,6 +534,100 @@ class TimeCellPopulation:
         return self.cells
 
 
+class ReplayBuffer:
+    def __init__(self, capacity: int = 240):
+        self.capacity = int(max(10, capacity))
+        self.buf = deque(maxlen=self.capacity)
+
+    def set_capacity(self, capacity: int):
+        capacity = int(max(10, capacity))
+        if capacity == self.capacity:
+            return
+        old = list(self.buf)
+        self.capacity = capacity
+        self.buf = deque(old[-capacity:], maxlen=capacity)
+
+    def push(self, item: Dict[str, Any]):
+        self.buf.append(item)
+
+    def __len__(self):
+        return len(self.buf)
+
+    def sample_recent(self, k: int) -> List[Dict[str, Any]]:
+        k = int(max(0, min(k, len(self.buf))))
+        if k == 0:
+            return []
+        return list(self.buf)[-k:]
+
+    def sample_older(self) -> Dict[str, Any] | None:
+        if len(self.buf) < 8:
+            return None
+        cutoff = int(len(self.buf) * 0.25)
+        pool = list(self.buf)[: max(1, len(self.buf) - cutoff)]
+        return random.choice(pool) if pool else None
+
+
+class HippocampalReplay:
+    """
+    Runs only during offline states (microsleep).
+    Replays recent snapshots; sometimes "bridges" with an older snapshot to link events.
+    """
+    def __init__(self, capacity: int = 240):
+        self.buffer = ReplayBuffer(capacity)
+        self.last_replay_trace: List[List[float]] = []
+
+    def set_capacity(self, capacity: int):
+        self.buffer.set_capacity(capacity)
+
+    def record(
+        self,
+        rat_pos: np.ndarray,
+        sensory_vec: np.ndarray,
+        memory_vec: np.ndarray,
+        frustration: float,
+        reward_signal: float,
+        danger_level: float,
+    ):
+        self.buffer.push(
+            {
+                "pos": rat_pos.astype(float).tolist(),
+                "sens": sensory_vec.astype(float).tolist(),
+                "mem": memory_vec.astype(float).tolist(),
+                "fr": float(frustration),
+                "r": float(reward_signal),
+                "danger": float(danger_level),
+            }
+        )
+
+    def run(self, steps: int, bridge_prob: float) -> List[Dict[str, Any]]:
+        self.last_replay_trace = []
+        recent = self.buffer.sample_recent(steps)
+        if not recent:
+            return []
+
+        out = []
+        for snap in recent:
+            a = snap
+            b = None
+            if random.random() < bridge_prob:
+                b = self.buffer.sample_older()
+
+            if b is None:
+                sens = np.array(a["sens"], dtype=float)
+                mem = np.array(a["mem"], dtype=float)
+                salience = abs(a["r"]) + a["danger"] + 0.25 * a["fr"]
+                pos = a["pos"]
+            else:
+                sens = 0.6 * np.array(a["sens"], dtype=float) + 0.4 * np.array(b["sens"], dtype=float)
+                mem = 0.6 * np.array(a["mem"], dtype=float) + 0.4 * np.array(b["mem"], dtype=float)
+                salience = (abs(a["r"]) + a["danger"] + 0.25 * a["fr"] + abs(b["r"]) + b["danger"] + 0.25 * b["fr"]) * 0.5
+                pos = a["pos"]
+
+            out.append({"sens": sens, "mem": mem, "salience": float(salience), "pos": pos})
+            self.last_replay_trace.append(pos)
+        return out
+
+
 class DendriticCluster:
     def __init__(self):
         self.pfc = PFC_Stripe(0)
@@ -494,6 +637,7 @@ class DendriticCluster:
         self.astrocyte = Astrocyte()
         self.trn = TRNGate()
         self.time_cells = TimeCellPopulation()
+        self.lc = LocusCoeruleus()
 
         self.vision_cortex = VisionCortex()
         self.somato_cortex = SomatoCortex()
@@ -517,6 +661,7 @@ class DendriticCluster:
         self.hd_cell_count = 36
         self.hd_cells = self._create_activity_bump(self.hd_cell_count, 0)
         self.hd_integration_weight = 2.0
+        self.replay = HippocampalReplay(capacity=240)
 
         self.place_memories: List[np.ndarray] = []
 
@@ -592,6 +737,47 @@ class DendriticCluster:
         consolidation = self.synaptic_tags * self.prp_level
         return consolidation
 
+    def record_experience(
+        self,
+        rat_pos,
+        sensory_vec,
+        current_memory,
+        frustration,
+        reward_signal,
+        danger_level,
+        replay_len: int,
+    ):
+        self.replay.set_capacity(replay_len)
+        self.replay.record(
+            rat_pos=np.array(rat_pos, dtype=float),
+            sensory_vec=sensory_vec,
+            memory_vec=current_memory,
+            frustration=frustration,
+            reward_signal=reward_signal,
+            danger_level=danger_level,
+        )
+
+    def offline_replay_and_consolidate(self, steps: int, bridge_prob: float, strength: float):
+        """
+        Apply replay to existing STC→BG consolidation path.
+        This should be *small* and *bounded* to avoid destabilising online policy.
+        """
+        items = self.replay.run(steps=steps, bridge_prob=bridge_prob)
+        if not items:
+            return
+
+        for it in items:
+            sens = it["sens"]
+            mem = it["mem"]
+            activity_proxy = np.array([np.linalg.norm(sens), np.linalg.norm(mem), 1.0], dtype=float)
+
+            prp_like = 1.0 if it["salience"] > 0.8 else 0.0
+            consolidation_vec = self.update_stc(activity_proxy, prp_like)
+
+            if float(np.max(consolidation_vec)) > 0.1:
+                self.basal_ganglia.w_gate += (0.001 * strength) * consolidation_vec
+                self.basal_ganglia.w_gate = np.clip(self.basal_ganglia.w_gate, -1.0, 1.0)
+
     def process_votes(
         self,
         frustration,
@@ -614,6 +800,7 @@ class DendriticCluster:
         enable_sensory_cortex=False,
         enable_thalamus=False,
         extra_arousal=0.0,
+        rat_pos=None,
     ):
         # ---- Apply genome weights so evolution actually matters ----
         w_amyg = clamp(self.weights.get("amygdala", 1.0), 0.1, 10.0)
@@ -631,7 +818,7 @@ class DendriticCluster:
         else:
             atp_availability = 1.0 # Infinite energy mode
             
-        arousal = (dopamine * 0.5) + (frustration * 0.5) + extra_arousal
+        arousal = (dopamine * 0.5) + (frustration * 0.5) + extra_arousal + lc_out["arousal_boost"]
         if atp_availability < 0.2:
             arousal = 0.0
 
@@ -665,6 +852,8 @@ class DendriticCluster:
         # Gate the old pathway
         sensory_vec_old_gated = sensory_vec_old_raw * gain_sensory
 
+        novelty = 0.0
+
         # 2. Compute new sensory vector (gated)
         sensory_vec_new_gated = np.array([0.0, 0.0])
         pain = 0.0
@@ -676,6 +865,7 @@ class DendriticCluster:
             sensory_vec_new_raw = vis_data["vis_vec"]
             pain = som_data["pain"]
             touch = som_data["touch"]
+            novelty = float(vis_data["features"][3])
             
             norm_new = np.linalg.norm(sensory_vec_new_raw)
             if norm_new > 0:
@@ -683,7 +873,7 @@ class DendriticCluster:
             vis_data["vis_vec"] = sensory_vec_new_raw
 
             if enable_thalamus:
-                thalamus_out = self.thalamus.relay(vis_data, som_data, topdown_attention=pfc_drive, relay_gain=gain_sensory)
+                thalamus_out = self.thalamus.relay(vis_data, som_data, topdown_attention=pfc_drive, relay_gain=gain_sensory * lc_out["attention_gain"])
                 sensory_vec_new_gated = thalamus_out["relay_vec"]
             else:
                 # If no thalamus, just use the cortex output, but still gate it
@@ -695,7 +885,15 @@ class DendriticCluster:
 
         current_memory = self.pfc.memory * gain_memory
 
+        lc_out = self.lc.step(
+            novelty=novelty,
+            pain=pain,
+            reward=float(1.0 if reward_signal > 0 else 0.0),
+            danger=float(danger_level),
+        )
+
         plasticity_mod = (ext_lactate / 0.5) * (0.5 + 0.5 * w_str)
+        plasticity_mod *= lc_out["plasticity_gain"]
         plasticity_mod = float(np.clip(plasticity_mod, 0.0, 5.0))
 
         # --- LOGIC UPDATE: Pass memory_gain ---
@@ -725,6 +923,17 @@ class DendriticCluster:
 
         theta_pump = (0.5 + (pheromones_len / 200.0)) * atp_availability
         d_theta, _ = self.mt_theta.step(theta_pump, lfp_signal=0.0, anesthetic_conc=anesthetic_level)
+
+        if rat_pos is not None:
+            self.record_experience(
+                rat_pos=np.array(rat_pos, dtype=float),
+                sensory_vec=sensory_vec,
+                current_memory=current_memory,
+                frustration=frustration,
+                reward_signal=reward_signal,
+                danger_level=danger_level,
+                replay_len=240,
+            )
 
         return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp, pain, touch
 
@@ -809,6 +1018,12 @@ class SimulationState:
             "enable_sensory_cortex": 0.0,   # 0/1
             "enable_thalamus": 0.0,         # 0/1
             "sensory_blend": 0.0,           # 0..1
+            # --- REPLAY / HIPPOCAMPUS ---
+            "enable_replay": 0.0,       # 0/1
+            "replay_steps": 6,          # how many replay items per microsleep
+            "replay_len": 240,          # ring buffer capacity (snapshots)
+            "replay_strength": 0.15,    # how much replay affects consolidation
+            "replay_bridge_prob": 0.25, # chance to mix in an older memory
         }
 
         self.generation = 1
@@ -827,6 +1042,8 @@ class SimulationState:
         self.vision_buffer: List[Dict[str, Any]] = []
         self.last_collision = False
         self.last_touch = 0.0
+
+        self.lab = ScientificTestBed(self)
 
         if not os.path.exists("evolution_log.csv"):
             with open("evolution_log.csv", "w") as f:
@@ -1076,6 +1293,83 @@ class SimulationState:
                     break
 
 
+class ScientificTestBed:
+    def __init__(self, simulation):
+        self.sim = simulation
+        self.active = False
+        self.trial_data = []  # List of {trial: int, frames: int}
+        self.current_trial = 0
+        self.trial_timer = 0
+        self.max_trials = 10
+        # Fixed positions for the experiment
+        self.start_pos = np.array([5.0, 5.0])
+        self.target_pos = np.array([35.0, 35.0])
+
+    def start_experiment(self):
+        print(">>> STARTING SCIENTIFIC ASSAY: SPATIAL LEARNING <<<")
+        self.active = True
+        self.trial_data = []
+        self.current_trial = 1
+        self.trial_timer = 0
+
+        # 1. Force a clean map (Open Field Box)
+        self.sim.map_size = 40
+        self.sim.occupancy_grid.fill(0)
+        self.sim.occupancy_grid[0, :] = 1
+        self.sim.occupancy_grid[-1, :] = 1
+        self.sim.occupancy_grid[:, 0] = 1
+        self.sim.occupancy_grid[:, -1] = 1
+
+        # 2. Remove Predator and distractions
+        self.sim.predator.pos = np.array([-10.0, -10.0])  # Move off map
+        self.sim.pheromones = []
+
+        # 3. Setup Trial 1
+        self._reset_rat_and_target()
+
+    def stop_experiment(self):
+        self.active = False
+        print(">>> EXPERIMENT ENDED <<<")
+
+    def _reset_rat_and_target(self):
+        # Reset physical location BUT KEEP BRAIN WEIGHTS (Learning preservation)
+        self.sim.rat_pos = self.start_pos.copy()
+        self.sim.rat_vel = np.array([0.0, 0.0])
+        self.sim.targets = [self.target_pos.copy()]  # Only one target
+
+        # Reset physiological needs so they don't interfere with the test
+        self.sim.frustration = 0.0
+        self.sim.dopamine = 0.5
+        self.sim.brain.astrocyte.glycogen = 1.0
+        self.sim.brain.astrocyte.neuronal_atp = 1.0
+
+        self.trial_timer = 0
+
+    def step(self):
+        if not self.active:
+            return
+
+        self.trial_timer += 1
+
+        # Check success condition (Target found)
+        dist = np.linalg.norm(self.sim.rat_pos - self.sim.targets[0])
+        if dist < 1.5:
+            # Success!
+            print(f"Trial {self.current_trial} Complete. Time: {self.trial_timer}")
+            self.trial_data.append({"trial": self.current_trial, "frames": self.trial_timer})
+
+            if self.current_trial < self.max_trials:
+                self.current_trial += 1
+                self._reset_rat_and_target()
+                # Optional: Reward boost to cement the memory
+                self.sim.brain.process_votes(0, 1.0, np.zeros(2), 1.0, 0, 0, 0, [], rat_pos=self.sim.rat_pos)
+            else:
+                self.stop_experiment()
+
+    def get_results(self):
+        return {"active": self.active, "data": self.trial_data, "current_trial": self.current_trial}
+
+
 sim = SimulationState()
 
 
@@ -1129,6 +1423,12 @@ def step():
         atp_level = float(sim.brain.astrocyte.neuronal_atp)
 
         for i in range(iterations):
+            if sim.lab.active:
+                sim.lab.step()
+                # Override standard dying logic during experiment
+                if sim.lab.active:
+                    sim.brain.astrocyte.glycogen = 1.0
+
             sim.update_whiskers()
             sim.process_vision()
             sim.frames_alive += 1
@@ -1194,7 +1494,17 @@ def step():
                         sim.vision_buffer,
                         anesthetic_level=anesthetic_level,
                         extra_arousal=arousal_from_touch,
+                        rat_pos=sim.rat_pos,
                     )
+                    # --- OFFLINE HIPPOCAMPAL REPLAY ---
+                    if float(sim.config.get("enable_replay", 0.0)) > 0.5:
+                        sim.brain.replay.set_capacity(int(sim.config.get("replay_len", 240)))
+                        sim.brain.offline_replay_and_consolidate(
+                            steps=int(sim.config.get("replay_steps", 6)),
+                            bridge_prob=float(sim.config.get("replay_bridge_prob", 0.25)),
+                            strength=float(sim.config.get("replay_strength", 0.15)),
+                        )
+                        sim.phantom_trace = sim.brain.replay.last_replay_trace[-200:]
                     return jsonify(
                         {
                             "rat": sim.rat_pos.tolist(),
@@ -1211,6 +1521,8 @@ def step():
                                 "status": "MICROSLEEP",
                                 "dopamine": sim.dopamine,
                                 "serotonin": sim.serotonin,
+                                "norepinephrine": float(sim.brain.lc.tonic_ne),
+                                "ne_phasic": float(sim.brain.lc.phasic_ne),
                                 "energy": float(glycogen_level),
                                 "atp": float(atp_level),
                                 "deaths": sim.deaths,
@@ -1273,6 +1585,7 @@ def step():
                 enable_sensory_cortex=enable_sensory_cortex,
                 enable_thalamus=enable_thalamus,
                 extra_arousal=arousal_from_touch,
+                rat_pos=sim.rat_pos,
             )
             sim.last_touch = touch # Update for next step
 
@@ -1284,7 +1597,8 @@ def step():
             sim.rat_vel = (sim.rat_vel * 0.85) + (final_decision_corrected * 0.15)
             sim.rat_vel = np.nan_to_num(sim.rat_vel)
 
-            tremor = np.random.randn(2) * 0.02
+            explore_gain = float(getattr(sim.brain, "lc", None).last.get("explore_gain", 1.0)) if hasattr(sim.brain, "lc") else 1.0
+            tremor = np.random.randn(2) * 0.02 * explore_gain
             sim.rat_vel += tremor
 
             s = float(np.linalg.norm(sim.rat_vel))
@@ -1292,22 +1606,47 @@ def step():
             if s > max_speed:
                 sim.rat_vel = (sim.rat_vel / (s + 1e-9)) * max_speed
 
-            new_pos = sim.rat_pos + sim.rat_vel
+            # --- NEW SLIDING PHYSICS LOGIC ---
+            
+            # 1. Try moving along X axis
+            next_x_pos = np.array([sim.rat_pos[0] + sim.rat_vel[0], sim.rat_pos[1]])
+            hit_x = sim.check_collision(next_x_pos)
+            
+            if hit_x:
+                sim.rat_vel[0] *= -0.5 # Bounce X
+                # Friction on Y when hitting X wall
+                sim.rat_vel[1] *= 0.9 
+            else:
+                sim.rat_pos[0] += sim.rat_vel[0]
 
-            hit = sim.check_collision(new_pos)
-            if hit:
-                sim.rat_vel *= -0.5
+            # 2. Try moving along Y axis
+            next_y_pos = np.array([sim.rat_pos[0], sim.rat_pos[1] + sim.rat_vel[1]])
+            hit_y = sim.check_collision(next_y_pos)
+            
+            if hit_y:
+                sim.rat_vel[1] *= -0.5 # Bounce Y
+                # Friction on X when hitting Y wall
+                sim.rat_vel[0] *= 0.9
+            else:
+                sim.rat_pos[1] += sim.rat_vel[1]
+
+            # 3. Update Status
+            sim.last_collision = hit_x or hit_y
+            
+            if sim.last_collision:
                 sim.frustration = min(1.0, sim.frustration + 0.1)
                 sim.serotonin = max(0.1, sim.serotonin - 0.1)
             else:
-                sim.rat_pos = new_pos
                 sim.frustration = max(0.0, sim.frustration - 0.005)
-            sim.last_collision = hit # Update for next tick
 
             # Pain increases frustration
             sim.frustration = min(1.0, sim.frustration + pain * 0.05)
 
             sim.cerebellum.update(sim.rat_pos)
+
+            # Only hunt if we aren't doing a science experiment
+            if not sim.lab.active:
+                sim.predator.hunt(sim.rat_pos, sim.occupancy_grid, sim.map_size)
 
             if np.random.rand() < 0.2:
                 sim.pheromones.append(sim.rat_pos.tolist())
@@ -1331,6 +1670,8 @@ def step():
                     "status": "AWAKE" if "TONIC" in sim.brain.trn.modes else "MICROSLEEP",
                     "dopamine": sim.dopamine,
                     "serotonin": sim.serotonin,
+                    "norepinephrine": float(sim.brain.lc.tonic_ne),
+                    "ne_phasic": float(sim.brain.lc.phasic_ne),
                     "energy": float(glycogen_level),
                     "atp": float(atp_level),
                     "deaths": sim.deaths,
@@ -1342,6 +1683,27 @@ def step():
                 "vision": sim.vision_buffer,
             }
         )
+
+
+@app.route("/lab/start", methods=["POST"])
+def start_lab():
+    with sim_lock:
+        sim.lab.start_experiment()
+        return jsonify({"status": "started"})
+
+
+@app.route("/lab/stop", methods=["POST"])
+def stop_lab():
+    with sim_lock:
+        sim.lab.stop_experiment()
+        sim.generate_map()
+        return jsonify({"status": "stopped"})
+
+
+@app.route("/lab/results", methods=["GET"])
+def lab_results():
+    with sim_lock:
+        return jsonify(sim.lab.get_results())
 
 
 @app.route("/history", methods=["GET"])
@@ -1441,6 +1803,16 @@ def config():
             sim.config["enable_thalamus"] = clamp(float(payload["enable_thalamus"]), 0.0, 1.0)
         if "sensory_blend" in payload:
             sim.config["sensory_blend"] = clamp(float(payload["sensory_blend"]), 0.0, 1.0)
+        if "enable_replay" in payload:
+            sim.config["enable_replay"] = clamp(float(payload["enable_replay"]), 0.0, 1.0)
+        if "replay_steps" in payload:
+            sim.config["replay_steps"] = int(np.clip(int(payload["replay_steps"]), 0, 50))
+        if "replay_len" in payload:
+            sim.config["replay_len"] = int(np.clip(int(payload["replay_len"]), 10, 5000))
+        if "replay_strength" in payload:
+            sim.config["replay_strength"] = clamp(float(payload["replay_strength"]), 0.0, 2.0)
+        if "replay_bridge_prob" in payload:
+            sim.config["replay_bridge_prob"] = clamp(float(payload["replay_bridge_prob"]), 0.0, 1.0)
 
         return jsonify({"status": "updated", "config": sim.config})
 
