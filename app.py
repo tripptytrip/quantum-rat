@@ -80,6 +80,8 @@ class MicrotubuleSimulator2D:
         # Phases: "ISOLATION" (Classical), "SUPERPOSITION" (Quantum), "COLLAPSE"
         self.phase = "ISOLATION"
         self.avg_coherence = 0.0 # New
+        self.readout = {"coherence":0.0, "entropy":0.0, "contrast":0.0, "collapse_ema":0.0}
+        self.collapse_ema = 0.0
         self.reset_wavefunction()
 
     def reset_wavefunction(self):
@@ -210,6 +212,9 @@ class MicrotubuleSimulator2D:
                 self.phase = "ISOLATION"
 
         self.avg_coherence = avg_coherence # update the attribute
+        self.collapse_ema = ema(self.collapse_ema, 1.0 if collapse_event else 0.0, tau=2.0, dt=self.dt)
+        self.readout = self.get_readouts()
+        
         # Normalize
         norm = float(np.linalg.norm(self.psi))
         if norm > 0:
@@ -220,6 +225,27 @@ class MicrotubuleSimulator2D:
         viz_density = density_viz * 200.0
 
         return viz_density, collapse_event
+
+    def get_readouts(self) -> Dict[str, float]:
+        density = np.abs(self.psi) ** 2
+        
+        # Coherence
+        coherence = self.avg_coherence
+
+        # Entropy
+        p = density / (np.sum(density) + 1e-9)
+        entropy = -np.sum(p * np.log(p + 1e-9)) / np.log(self.psi.size)
+        
+        # Contrast
+        contrast = np.var(density)
+
+        return {
+            "coherence": coherence,
+            "entropy": entropy,
+            "contrast": contrast,
+            "collapse_ema": self.collapse_ema
+        }
+
 
 
 class Astrocyte:
@@ -526,7 +552,8 @@ class BasalGanglia:
         drive_level: float,
         reward: float,
         learning_rate_mod: float,
-        memory_gain: float = 1.0  # <--- NEW PARAMETER
+        memory_gain: float = 1.0,  # <--- NEW PARAMETER
+        theta_readouts: Dict[str, float] = None
     ):
         sensory_mag = float(np.linalg.norm(sensory_vec))
         dopamine = self.pvlv.step(sensory_mag, reward)
@@ -537,10 +564,13 @@ class BasalGanglia:
         context = np.array([np.linalg.norm(sensory_vec), np.linalg.norm(effective_memory), drive_level], dtype=float)
 
         gate_activation = float(np.dot(self.w_gate, context) + dopamine)
-        if sim.config.get("mt_causal", 0.0) > 0.5:
-            # Assuming sim object is accessible, which it is in the global scope
-            gate_activation += sim.brain.mt_readout_soma * sim.config.get("mt_mod_gate", 0.2)
-        gate_signal = 1.0 if gate_activation > 0.5 else -1.0
+        
+        thr = 0.5
+        if sim.config.get("mt_causal", 0.0) > 0.5 and theta_readouts:
+            thr = 0.5 + sim.config.get("mt_mod_gate", 0.2) * (theta_readouts["entropy"] - theta_readouts["coherence"]) * 0.1
+            thr = clamp(thr, 0.4, 0.6)
+
+        gate_signal = 1.0 if gate_activation > thr else -1.0
 
         w_sensory = self.w_motor[0] * (1.0 + dopamine)
         w_memory = self.w_motor[1] * (1.0 - dopamine)
@@ -556,7 +586,7 @@ class BasalGanglia:
             self.w_gate = np.clip(self.w_gate, -1.0, 1.0)
             self.w_motor = np.clip(self.w_motor, 0.0, 5.0)
 
-        return motor_out, gate_signal, dopamine
+        return motor_out, gate_signal, dopamine, thr
 
 
 class TimeCellPopulation:
@@ -1085,13 +1115,22 @@ class DendriticCluster:
 
         plasticity_mod = (ext_lactate / 0.5) * (0.5 + 0.5 * w_str)
         plasticity_mod *= lc_out["plasticity_gain"]
+
+        soma_r = self.soma.get_readouts()
+        theta_r = self.mt_theta.get_readouts()
+
+        mt_plasticity_mult = 1.0
         if sim.config.get("mt_causal", 0.0) > 0.5:
-            plasticity_mod *= (1.0 + self.mt_readout_soma * sim.config.get("mt_mod_plasticity", 0.5))
+            mt_plast = 1.0 + sim.config.get("mt_mod_plasticity", 0.5) * (theta_r["coherence"] - theta_r["entropy"])
+            mt_plast = clamp(mt_plast, 0.5, 1.5)
+            plasticity_mod *= mt_plast
+            mt_plasticity_mult = mt_plast
+
         plasticity_mod = float(np.clip(plasticity_mod, 0.0, 5.0))
 
         # --- LOGIC UPDATE: Pass memory_gain ---
-        final_vector, gate_signal, internal_dopamine = self.basal_ganglia.select_action_and_gate(
-            sensory_vec, current_memory, frustration, reward_signal, plasticity_mod, memory_gain=memory_gain
+        final_vector, gate_signal, internal_dopamine, mt_gate_thr = self.basal_ganglia.select_action_and_gate(
+            sensory_vec, current_memory, frustration, reward_signal, plasticity_mod, memory_gain=memory_gain, theta_readouts=theta_r
         )
         
         # ... rest of the function remains the same ...
@@ -1135,7 +1174,7 @@ class DendriticCluster:
                 near_death=near_death,
             )
 
-        return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp, pain, touch, place_metrics, self.mt_readout_soma, self.mt_readout_theta
+        return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp, pain, touch, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr
 
 
 
@@ -1321,12 +1360,12 @@ class SimulationState:
         self.brain.soma.neighbor_mode = self.config.get("mt_neighbor_mode", "legacy")
         self.brain.mt_theta.neighbor_mode = self.config.get("mt_neighbor_mode", "legacy")
         det_mode = float(self.config.get("deterministic", 0.0)) > 0.5
-                self.brain.soma.deterministic_mode = det_mode
-                self.brain.mt_theta.deterministic_mode = det_mode
-                self.brain.trn.deterministic_mode = det_mode
-                if hasattr(self.brain, "place_cells") and self.brain.place_cells is not None:
-                    self.brain.place_cells.reset()
-                # Regenerate map and reset position/velocity
+        self.brain.soma.deterministic_mode = det_mode
+        self.brain.mt_theta.deterministic_mode = det_mode
+        self.brain.trn.deterministic_mode = det_mode
+        if hasattr(self.brain, "place_cells") and self.brain.place_cells is not None:
+            self.brain.place_cells.reset()
+        # Regenerate map and reset position/velocity
         self.generate_map()
         self.rat_pos = np.array([3.0, 3.0])
         self.rat_vel = np.array([0.0, 0.6])
@@ -1916,7 +1955,7 @@ def step():
                                 min_dist = dist
                                 target_pos = t
 
-                    soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _, place_metrics = sim.brain.process_votes(
+                    soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr = sim.brain.process_votes(
                         sim.frustration,
                         sim.dopamine,
                         sim.rat_vel,
@@ -1979,6 +2018,10 @@ def step():
                                 "place_nav_mag": place_metrics["place_nav_mag"],
                                 "place_act_max": place_metrics["place_act_max"],
                                 "place_goal_strength": place_metrics["place_goal_strength"],
+                                "mt_theta_readouts": theta_r,
+                                "mt_soma_readouts": soma_r,
+                                "mt_plasticity_mult": mt_plasticity_mult,
+                                "mt_gate_thr": mt_gate_thr,
                             },
                             "phantom": sim.phantom_trace,
                             "pheromones": sim.pheromones,
@@ -2179,8 +2222,11 @@ def step():
                     "place_nav_mag": place_metrics["place_nav_mag"],
                     "place_act_max": place_metrics["place_act_max"],
                     "place_goal_strength": place_metrics["place_goal_strength"],
+                    "mt_theta_readouts": theta_r,
+                    "mt_soma_readouts": soma_r,
+                    "mt_plasticity_mult": mt_plasticity_mult,
+                    "mt_gate_thr": mt_gate_thr,
                 },
-                "phantom": sim.phantom_trace,
                 "pheromones": sim.pheromones,
                 "whiskers": {"angle": sim.whisk_angle, "hits": sim.whisker_hits},
                 "vision": sim.vision_buffer,
