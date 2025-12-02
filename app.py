@@ -79,7 +79,7 @@ class MicrotubuleSimulator2D:
 
         # Phases: "ISOLATION" (Classical), "SUPERPOSITION" (Quantum), "COLLAPSE"
         self.phase = "ISOLATION"
-
+        self.avg_coherence = 0.0 # New
         self.reset_wavefunction()
 
     def reset_wavefunction(self):
@@ -209,6 +209,7 @@ class MicrotubuleSimulator2D:
                 self.accumulated_Eg = 0.0
                 self.phase = "ISOLATION"
 
+        self.avg_coherence = avg_coherence # update the attribute
         # Normalize
         norm = float(np.linalg.norm(self.psi))
         if norm > 0:
@@ -536,6 +537,9 @@ class BasalGanglia:
         context = np.array([np.linalg.norm(sensory_vec), np.linalg.norm(effective_memory), drive_level], dtype=float)
 
         gate_activation = float(np.dot(self.w_gate, context) + dopamine)
+        if sim.config.get("mt_causal", 0.0) > 0.5:
+            # Assuming sim object is accessible, which it is in the global scope
+            gate_activation += sim.brain.mt_readout_soma * sim.config.get("mt_mod_gate", 0.2)
         gate_signal = 1.0 if gate_activation > 0.5 else -1.0
 
         w_sensory = self.w_motor[0] * (1.0 + dopamine)
@@ -688,6 +692,62 @@ class HippocampalReplay:
         return out
 
 
+
+class PlaceCellNetwork:
+    def __init__(self, n_cells: int, sigma: float, map_size: int):
+        self.n_cells = n_cells
+        self.sigma = sigma
+        self.centers = self._create_centers(map_size)
+        self.acts = np.zeros(self.n_cells)
+        self.goal_vec_w = np.zeros((self.n_cells, 2))
+
+    def _create_centers(self, map_size: int):
+        """Creates a grid of place cell centers."""
+        n_sqrt = int(np.sqrt(self.n_cells))
+        x = np.linspace(0, map_size, n_sqrt)
+        y = np.linspace(0, map_size, n_sqrt)
+        xv, yv = np.meshgrid(x, y)
+        return np.stack([xv.ravel(), yv.ravel()], axis=1)
+
+    def step(self, pos: np.ndarray, reward: float, target_pos: np.ndarray, threshold: float, lr: float, decay: float):
+        # 1. Compute activations
+        dists_sq = np.sum((pos - self.centers) ** 2, axis=1)
+        self.acts = np.exp(-dists_sq / (2 * self.sigma ** 2))
+
+        # 2. Update weights if rewarded
+        if reward >= threshold:
+            desired = target_pos - pos
+            norm = np.linalg.norm(desired)
+            if norm > 0:
+                desired /= norm
+
+            current_nav_vec = self.acts @ self.goal_vec_w
+            
+            # Vector delta rule
+            delta_w = lr * np.outer(self.acts, desired - current_nav_vec)
+            self.goal_vec_w += delta_w
+
+        # 3. Apply decay
+        self.goal_vec_w *= (1 - decay)
+
+        # 4. Clamp weights
+        self.goal_vec_w = np.clip(self.goal_vec_w, -2.0, 2.0)
+
+        # 5. Compute navigation vector
+        nav_vec = self.acts @ self.goal_vec_w
+        norm = np.linalg.norm(nav_vec)
+        if norm > 1e-9:
+            nav_vec /= norm
+        else:
+            nav_vec = np.array([0.0, 0.0])
+        
+        return self.acts, nav_vec
+
+    def reset(self):
+        self.acts.fill(0.0)
+        self.goal_vec_w.fill(0.0)
+
+
 class DendriticCluster:
     def __init__(self, rng=None, py_rng=None, mt_rng=None, load_genome: bool = True):
         if rng is None:
@@ -711,6 +771,10 @@ class DendriticCluster:
         self.vision_cortex = VisionCortex()
         self.somato_cortex = SomatoCortex()
         self.thalamus = Thalamus()
+        self.place_cells = None
+
+        self.mt_readout_soma = 0.0 # New
+        self.mt_readout_theta = 0.0 # New
 
         # STC variables
         self.synaptic_tags = np.zeros(3)
@@ -890,6 +954,7 @@ class DendriticCluster:
         amygdala_drive: float = 0.0,
         pfc_drive: float = 0.0,
         precomputed_lc_out: Optional[Dict[str, float]] = None,
+        target_pos: Optional[np.ndarray] = None,
     ):
         # ---- Apply genome weights so evolution actually matters ----
         w_amyg = clamp(self.weights.get("amygdala", 1.0), 0.1, 10.0)
@@ -988,10 +1053,40 @@ class DendriticCluster:
         k = clamp(float(sensory_blend), 0.0, 1.0)
         sensory_vec = ((1 - k) * sensory_vec_old_gated) + (k * sensory_vec_new_gated)
 
+        # --- PLACE CELL NAVIGATION ---
+        place_metrics = {
+            "place_nav_mag": 0.0,
+            "place_act_max": 0.0,
+            "place_goal_strength": 0.0
+        }
+        if self.place_cells and rat_pos is not None and target_pos is not None:
+            place_acts, place_nav_vec = self.place_cells.step(
+                pos=rat_pos,
+                reward=reward_signal,
+                target_pos=target_pos,
+                threshold=sim.config.get("goal_reward_threshold", 0.5),
+                lr=sim.config.get("place_goal_lr", 0.02),
+                decay=sim.config.get("place_decay", 0.001)
+            )
+            
+            gain = float(sim.config.get("place_nav_gain", 1.0))
+            sensory_vec += gain * place_nav_vec
+            
+            # Normalize sensory_vec after blending
+            norm = np.linalg.norm(sensory_vec)
+            if norm > 0:
+                sensory_vec /= norm
+
+            place_metrics["place_nav_mag"] = float(np.linalg.norm(place_nav_vec))
+            place_metrics["place_act_max"] = float(np.max(place_acts))
+            place_metrics["place_goal_strength"] = float(np.mean(np.abs(self.place_cells.goal_vec_w)))
+
         current_memory = self.pfc.memory * gain_memory
 
         plasticity_mod = (ext_lactate / 0.5) * (0.5 + 0.5 * w_str)
         plasticity_mod *= lc_out["plasticity_gain"]
+        if sim.config.get("mt_causal", 0.0) > 0.5:
+            plasticity_mod *= (1.0 + self.mt_readout_soma * sim.config.get("mt_mod_plasticity", 0.5))
         plasticity_mod = float(np.clip(plasticity_mod, 0.0, 5.0))
 
         # --- LOGIC UPDATE: Pass memory_gain ---
@@ -1022,6 +1117,12 @@ class DendriticCluster:
         theta_pump = (0.5 + (pheromones_len / 200.0)) * atp_availability
         d_theta, _ = self.mt_theta.step(theta_pump, lfp_signal=0.0, anesthetic_conc=anesthetic_level)
 
+        # Microtubule Causal Readouts
+        if sim.config.get("mt_causal", 0.0) > 0.5:
+            mt_readout_tau = float(sim.config.get("mt_readout_tau", 0.5))
+            self.mt_readout_soma = ema(self.mt_readout_soma, self.soma.avg_coherence, mt_readout_tau, dt)
+            self.mt_readout_theta = ema(self.mt_readout_theta, self.mt_theta.avg_coherence, mt_readout_tau, dt)
+
         if rat_pos is not None:
             self.record_experience(
                 rat_pos=np.array(rat_pos, dtype=float),
@@ -1034,7 +1135,8 @@ class DendriticCluster:
                 near_death=near_death,
             )
 
-        return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp, pain, touch
+        return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp, pain, touch, place_metrics, self.mt_readout_soma, self.mt_readout_theta
+
 
 
 
@@ -1139,6 +1241,22 @@ class SimulationState:
             "panic_trn_gain": 0.5,
             "panic_motor_bias": 0.5,
             "stress_learning_gain": 0.5,
+            # --- NEW PLACE CELL KNOBS ---
+            "enable_place_cells": 0.0,        # 0/1
+            "place_n": 64,                    # number of place cells
+            "place_sigma": 2.5,               # spatial tuning width in tiles
+            "place_lr": 0.01,                 # Hebbian learning rate
+            "place_decay": 0.001,             # weight decay per step
+            "place_goal_lr": 0.02,            # learning rate for goal vector readout
+            "place_nav_gain": 1.0,            # strength of place-based nav vs other vectors
+            "place_nav_blend": 0.35,          # blend proportion into final_vector
+            "goal_reward_threshold": 0.5,     # what counts as rewarding for goal learning
+            # --- NEW MICROTUBULE CAUSAL KNOBS ---
+            "mt_causal": 0.0,                 # 0/1
+            "mt_mod_plasticity": 0.5,         # 0..2 multiplier strength
+            "mt_mod_explore": 0.3,            # 0..2 exploration noise multiplier strength
+            "mt_mod_gate": 0.2,               # 0..2 gate threshold modulation
+            "mt_readout_tau": 0.5,            # smoothing for readouts
         }
         self.apply_runtime_config()
 
@@ -1203,11 +1321,12 @@ class SimulationState:
         self.brain.soma.neighbor_mode = self.config.get("mt_neighbor_mode", "legacy")
         self.brain.mt_theta.neighbor_mode = self.config.get("mt_neighbor_mode", "legacy")
         det_mode = float(self.config.get("deterministic", 0.0)) > 0.5
-        self.brain.soma.deterministic_mode = det_mode
-        self.brain.mt_theta.deterministic_mode = det_mode
-        self.brain.trn.deterministic_mode = det_mode
-
-        # Regenerate map and reset position/velocity
+                self.brain.soma.deterministic_mode = det_mode
+                self.brain.mt_theta.deterministic_mode = det_mode
+                self.brain.trn.deterministic_mode = det_mode
+                if hasattr(self.brain, "place_cells") and self.brain.place_cells is not None:
+                    self.brain.place_cells.reset()
+                # Regenerate map and reset position/velocity
         self.generate_map()
         self.rat_pos = np.array([3.0, 3.0])
         self.rat_vel = np.array([0.0, 0.6])
@@ -1248,6 +1367,18 @@ class SimulationState:
             self.brain.mt_rng = self.rng_microtub
         if hasattr(self.brain, "py_rng"):
             self.brain.py_rng = self.py_rng
+        
+        if self.config.get("enable_place_cells", 0.0) > 0.5:
+            if self.brain.place_cells is None or \
+               self.brain.place_cells.n_cells != int(self.config["place_n"]) or \
+               self.brain.place_cells.sigma != float(self.config["place_sigma"]):
+                self.brain.place_cells = PlaceCellNetwork(
+                    n_cells=int(self.config["place_n"]),
+                    sigma=float(self.config["place_sigma"]),
+                    map_size=self.map_size
+                )
+        else:
+            self.brain.place_cells = None
 
     def reseed(self, seed: int):
         seed = int(seed)
@@ -1487,6 +1618,8 @@ class SimulationState:
             self.brain.basal_ganglia.reset()
         else:
             self.brain.basal_ganglia = BasalGanglia(rng=self.rng_brain)
+        if hasattr(self.brain, "place_cells") and self.brain.place_cells is not None:
+            self.brain.place_cells.reset()
         self.brain.place_memories = []
 
         while True:
@@ -1568,7 +1701,7 @@ class ScientificTestBed:
                 self.current_trial += 1
                 self._reset_rat_and_target()
                 # Optional: Reward boost to cement the memory
-                self.sim.brain.process_votes(0, 1.0, np.zeros(2), 1.0, 0, 0, 0, [], rat_pos=self.sim.rat_pos)
+                sim.brain.process_votes(0, 1.0, np.zeros(2), 1.0, 0, 0, 0, [], rat_pos=self.sim.rat_pos, target_pos=self.target_pos)
             else:
                 self.stop_experiment()
 
@@ -1772,7 +1905,18 @@ def step():
             if trn_modes[0] == "BURST" and trn_modes[1] == "BURST":
                 if i == iterations - 1:
                     panic_trn_gain_ms = float(sim.config.get("panic_trn_gain", 0.5))
-                    soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _ = sim.brain.process_votes(
+                    
+                    target_pos = None
+                    if len(sim.targets) > 0:
+                        target_pos = sim.targets[0]
+                        min_dist = np.linalg.norm(sim.rat_pos - target_pos)
+                        for t in sim.targets[1:]:
+                            dist = np.linalg.norm(sim.rat_pos - t)
+                            if dist < min_dist:
+                                min_dist = dist
+                                target_pos = t
+
+                    soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _, place_metrics = sim.brain.process_votes(
                         sim.frustration,
                         sim.dopamine,
                         sim.rat_vel,
@@ -1795,6 +1939,7 @@ def step():
                         amygdala_drive=amygdala_drive,
                         pfc_drive=pfc_drive,
                         precomputed_lc_out=lc_out,
+                        target_pos=target_pos,
                     )
                     # --- OFFLINE HIPPOCAMPAL REPLAY ---
                     if float(sim.config.get("enable_replay", 0.0)) > 0.5:
@@ -1831,6 +1976,9 @@ def step():
                                 "atp": float(atp_level),
                                 "deaths": sim.deaths,
                                 "generation": sim.generation,
+                                "place_nav_mag": place_metrics["place_nav_mag"],
+                                "place_act_max": place_metrics["place_act_max"],
+                                "place_goal_strength": place_metrics["place_goal_strength"],
                             },
                             "phantom": sim.phantom_trace,
                             "pheromones": sim.pheromones,
@@ -1876,7 +2024,17 @@ def step():
             enable_sensory_cortex = float(sim.config.get("enable_sensory_cortex", 0.0)) > 0.5
             enable_thalamus = float(sim.config.get("enable_thalamus", 0.0)) > 0.5
 
-            soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, pain, touch = sim.brain.process_votes(
+            target_pos = None
+            if len(sim.targets) > 0:
+                target_pos = sim.targets[0]
+                min_dist = np.linalg.norm(sim.rat_pos - target_pos)
+                for t in sim.targets[1:]:
+                    dist = np.linalg.norm(sim.rat_pos - t)
+                    if dist < min_dist:
+                        min_dist = dist
+                        target_pos = t
+
+            soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, pain, touch, place_metrics = sim.brain.process_votes(
                 sim.frustration,
                 sim.dopamine,
                 sim.rat_vel,
@@ -1908,6 +2066,7 @@ def step():
                 amygdala_drive=amygdala_drive,
                 pfc_drive=pfc_drive,
                 precomputed_lc_out=lc_out,
+                target_pos=target_pos,
             )
             sim.last_touch = touch # Update for next step
 
@@ -1929,6 +2088,8 @@ def step():
             sim.rat_vel = np.nan_to_num(sim.rat_vel)
 
             explore_gain = float(getattr(sim.brain, "lc", None).last.get("explore_gain", 1.0)) if hasattr(sim.brain, "lc") else 1.0
+            if sim.config.get("mt_causal", 0.0) > 0.5:
+                explore_gain *= (1.0 + sim.brain.mt_readout_theta * sim.config.get("mt_mod_explore", 0.3))
             tremor = sim.rng_noise.normal(0.0, 1.0, size=2) * 0.02 * explore_gain
             sim.rat_vel += tremor
 
@@ -2015,6 +2176,9 @@ def step():
                     "atp": float(atp_level),
                     "deaths": sim.deaths,
                     "generation": sim.generation,
+                    "place_nav_mag": place_metrics["place_nav_mag"],
+                    "place_act_max": place_metrics["place_act_max"],
+                    "place_goal_strength": place_metrics["place_goal_strength"],
                 },
                 "phantom": sim.phantom_trace,
                 "pheromones": sim.pheromones,

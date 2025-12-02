@@ -1,3 +1,12 @@
+# Determinism Test Note:
+# The new place cell parameters ("enable_place_cells", "place_n", "place_sigma",
+# "place_lr", "place_decay", "place_goal_lr", "place_nav_gain",
+# "place_nav_blend", "goal_reward_threshold")
+# and microtubule causal parameters ("mt_causal", "mt_mod_plasticity",
+# "mt_mod_explore", "mt_mod_gate", "mt_readout_tau")
+# must be treated as numeric-only.
+# No extra RNG usage unless it is properly seeded to ensure determinism.
+
 import copy
 import hashlib
 
