@@ -311,6 +311,98 @@ class PVLV_Learning:
         return float(dopamine)
 
 
+class VisionCortex:
+    def __init__(self):
+        self.ema_salience = 0.0
+
+    def encode(self, vision_rays: List[Dict[str, Any]]) -> Dict[str, Any]:
+        salience_weights = {1: 0.5, 2: 2.0, 3: 1.5} # wall, predator, target
+        max_salience = 0.0
+        max_target_salience = 0.0
+        salient_target_ray = None
+
+        wall_dist = 15.0
+        predator_dist = 15.0
+        target_dist = 15.0
+
+        for ray in vision_rays:
+            dist = ray.get("dist", 15.0)
+            typ = ray.get("type", 0)
+            
+            if typ in salience_weights:
+                salience = salience_weights[typ] * (1.0 / (dist + 1e-9))
+                if salience > max_salience:
+                    max_salience = salience
+
+                if typ == 3 and salience > max_target_salience:
+                    max_target_salience = salience
+                    salient_target_ray = ray
+
+            if typ == 1: wall_dist = min(wall_dist, dist)
+            if typ == 2: predator_dist = min(predator_dist, dist)
+            if typ == 3: target_dist = min(target_dist, dist)
+
+        vis_vec = np.array([0.0, 0.0])
+        if salient_target_ray:
+            angle = salient_target_ray.get("angle", 0.0)
+            vis_vec = np.array([np.cos(angle), np.sin(angle)])
+
+        novelty = abs(max_salience - self.ema_salience)
+        self.ema_salience = 0.9 * self.ema_salience + 0.1 * max_salience
+
+        features = np.array([
+            clamp(1.0 - wall_dist / 15.0, 0.0, 1.0),
+            clamp(1.0 - predator_dist / 15.0, 0.0, 1.0),
+            clamp(1.0 - target_dist / 15.0, 0.0, 1.0),
+            clamp(novelty, 0.0, 1.0)
+        ])
+        
+        return {
+            "vis_vec": vis_vec,
+            "features": features
+        }
+
+class SomatoCortex:
+    def __init__(self):
+        self.ema_pain = 0.0
+
+    def encode(self, whisker_hits, collision: bool) -> Dict[str, Any]:
+        touch = 1.0 if whisker_hits and any(whisker_hits) else 0.0
+        pain = 1.0 if collision else 0.0
+        
+        self.ema_pain = max(pain, self.ema_pain * 0.9)
+        
+        return {
+            "touch": touch,
+            "pain": self.ema_pain
+        }
+
+class Thalamus:
+    def __init__(self):
+        self.ema_gain = 1.0
+
+    def relay(self,
+              vis: Dict[str, Any],
+              som: Dict[str, Any],
+              topdown_attention: float = 0.0,
+              relay_gain: float = 1.0
+              ) -> Dict[str, Any]:
+        
+        sensory_gain = relay_gain * clamp(0.8 + 0.04 * topdown_attention, 0.5, 1.5)
+        
+        self.ema_gain = 0.9 * self.ema_gain + 0.1 * sensory_gain
+        
+        relay_vec = vis.get("vis_vec", np.array([0.0, 0.0])) * self.ema_gain
+        relay_features = vis.get("features", np.array([0.0, 0.0, 0.0, 0.0])) * self.ema_gain
+        
+        return {
+            "relay_vec": relay_vec,
+            "relay_features": relay_features,
+            "touch": som.get("touch", 0.0),
+            "pain": som.get("pain", 0.0)
+        }
+
+
 class PFC_Stripe:
     def __init__(self, id_):
         self.id = id_
@@ -339,18 +431,24 @@ class BasalGanglia:
         drive_level: float,
         reward: float,
         learning_rate_mod: float,
+        memory_gain: float = 1.0  # <--- NEW PARAMETER
     ):
         sensory_mag = float(np.linalg.norm(sensory_vec))
         dopamine = self.pvlv.step(sensory_mag, reward)
 
-        context = np.array([np.linalg.norm(sensory_vec), np.linalg.norm(memory_vec), drive_level], dtype=float)
+        # Apply the manual slider gain to the memory vector
+        effective_memory = memory_vec * memory_gain 
+
+        context = np.array([np.linalg.norm(sensory_vec), np.linalg.norm(effective_memory), drive_level], dtype=float)
 
         gate_activation = float(np.dot(self.w_gate, context) + dopamine)
         gate_signal = 1.0 if gate_activation > 0.5 else -1.0
 
         w_sensory = self.w_motor[0] * (1.0 + dopamine)
         w_memory = self.w_motor[1] * (1.0 - dopamine)
-        motor_out = (sensory_vec * w_sensory) + (memory_vec * w_memory)
+        
+        # Use effective_memory here
+        motor_out = (sensory_vec * w_sensory) + (effective_memory * w_memory)
 
         if learning_rate_mod > 0.1:
             lr = 0.01 * learning_rate_mod
@@ -396,6 +494,10 @@ class DendriticCluster:
         self.astrocyte = Astrocyte()
         self.trn = TRNGate()
         self.time_cells = TimeCellPopulation()
+
+        self.vision_cortex = VisionCortex()
+        self.somato_cortex = SomatoCortex()
+        self.thalamus = Thalamus()
 
         # STC variables
         self.synaptic_tags = np.zeros(3)
@@ -501,6 +603,17 @@ class DendriticCluster:
         head_direction,
         vision_data,
         anesthetic_level=0.0,
+        # --- NEW PARAMETERS ---
+        fear_gain=1.0,
+        memory_gain=1.0,
+        energy_constraint=True,
+        # NEW OPTIONAL SENSORY INPUTS (backwards compatible)
+        whisker_hits=None,
+        collision=False,
+        sensory_blend=0.0,
+        enable_sensory_cortex=False,
+        enable_thalamus=False,
+        extra_arousal=0.0,
     ):
         # ---- Apply genome weights so evolution actually matters ----
         w_amyg = clamp(self.weights.get("amygdala", 1.0), 0.1, 10.0)
@@ -510,13 +623,19 @@ class DendriticCluster:
         self.update_grid_cells(rat_vel, head_direction)
 
         neural_activity = float(np.linalg.norm(rat_vel) + frustration)
-        atp_availability, ext_lactate = self.astrocyte.step(neural_activity)
-
-        arousal = (dopamine * 0.5) + (frustration * 0.5)
+        
+        # --- LOGIC UPDATE: Energy Constraint Switch ---
+        real_atp, ext_lactate = self.astrocyte.step(neural_activity)
+        if energy_constraint:
+            atp_availability = real_atp
+        else:
+            atp_availability = 1.0 # Infinite energy mode
+            
+        arousal = (dopamine * 0.5) + (frustration * 0.5) + extra_arousal
         if atp_availability < 0.2:
             arousal = 0.0
 
-        amygdala_drive = float(danger_level) * w_amyg
+        amygdala_drive = float(danger_level) * w_amyg * fear_gain
         pfc_drive = float(frustration) * w_hip
 
         trn_modes = self.trn.step(arousal, amygdala_drive, pfc_drive)
@@ -526,28 +645,65 @@ class DendriticCluster:
 
         if reward_signal > 0:
             self.time_cells.reset()
-        _temporal_context = self.time_cells.step()  # currently unused; keep for future wiring
+        _temporal_context = self.time_cells.step() 
 
-        # Sensory vector from vision rays (closest target)
-        sensory_vec = np.array([0.0, 0.0])
+        # --- REFACTORED SENSORY PATHWAY ---
+
+        # 1. Compute raw old sensory vector (pre-gain)
+        sensory_vec_old_raw = np.array([0.0, 0.0])
         closest_dist = 999.0
         for ray in vision_data:
-            if ray["type"] == 3:
+            if ray["type"] == 3: # Target
                 if ray["dist"] < closest_dist:
                     closest_dist = ray["dist"]
-                    sensory_vec = np.array([np.cos(ray["angle"]), np.sin(ray["angle"])])
+                    sensory_vec_old_raw = np.array([np.cos(ray["angle"]), np.sin(ray["angle"])])
+        
+        norm_old = np.linalg.norm(sensory_vec_old_raw)
+        if norm_old > 0:
+            sensory_vec_old_raw /= norm_old
 
-        sensory_vec *= gain_sensory
+        # Gate the old pathway
+        sensory_vec_old_gated = sensory_vec_old_raw * gain_sensory
+
+        # 2. Compute new sensory vector (gated)
+        sensory_vec_new_gated = np.array([0.0, 0.0])
+        pain = 0.0
+        touch = 0.0
+
+        if enable_sensory_cortex:
+            vis_data = self.vision_cortex.encode(vision_data)
+            som_data = self.somato_cortex.encode(whisker_hits, collision)
+            sensory_vec_new_raw = vis_data["vis_vec"]
+            pain = som_data["pain"]
+            touch = som_data["touch"]
+            
+            norm_new = np.linalg.norm(sensory_vec_new_raw)
+            if norm_new > 0:
+                sensory_vec_new_raw /= norm_new
+            vis_data["vis_vec"] = sensory_vec_new_raw
+
+            if enable_thalamus:
+                thalamus_out = self.thalamus.relay(vis_data, som_data, topdown_attention=pfc_drive, relay_gain=gain_sensory)
+                sensory_vec_new_gated = thalamus_out["relay_vec"]
+            else:
+                # If no thalamus, just use the cortex output, but still gate it
+                sensory_vec_new_gated = sensory_vec_new_raw * gain_sensory
+        
+        # 3. Blend the two gated vectors
+        k = clamp(float(sensory_blend), 0.0, 1.0)
+        sensory_vec = ((1 - k) * sensory_vec_old_gated) + (k * sensory_vec_new_gated)
+
         current_memory = self.pfc.memory * gain_memory
 
-        # Lactate -> plasticity modulation; striatum weight scales learning responsiveness
         plasticity_mod = (ext_lactate / 0.5) * (0.5 + 0.5 * w_str)
         plasticity_mod = float(np.clip(plasticity_mod, 0.0, 5.0))
 
+        # --- LOGIC UPDATE: Pass memory_gain ---
         final_vector, gate_signal, internal_dopamine = self.basal_ganglia.select_action_and_gate(
-            sensory_vec, current_memory, frustration, reward_signal, plasticity_mod
+            sensory_vec, current_memory, frustration, reward_signal, plasticity_mod, memory_gain=memory_gain
         )
-
+        
+        # ... rest of the function remains the same ...
         activity_proxy = np.array([np.linalg.norm(sensory_vec), np.linalg.norm(current_memory), frustration])
         consolidation_vector = self.update_stc(activity_proxy, reward_signal)
 
@@ -556,7 +712,6 @@ class DendriticCluster:
 
         self.pfc.update(sensory_vec, gate_signal)
 
-        # Soma MT drive from final vector
         angle = float(np.arctan2(final_vector[1], final_vector[0]))
         if angle < 0:
             angle += 2 * np.pi
@@ -571,7 +726,8 @@ class DendriticCluster:
         theta_pump = (0.5 + (pheromones_len / 200.0)) * atp_availability
         d_theta, _ = self.mt_theta.step(theta_pump, lfp_signal=0.0, anesthetic_conc=anesthetic_level)
 
-        return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp
+        return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp, pain, touch
+
 
 
 class Predator:
@@ -640,11 +796,19 @@ class SimulationState:
 
         # Add config defaults + helpful knobs
         self.config = {
-            "speed": 1,            # iterations per /step
-            "sensitivity": 0.05,   # (kept for UI compatibility)
-            "anesthetic": 0.0,     # 0..1
-            "downsample": 1,       # 1=full, 2=half, 4=quarter for brain arrays to JSON
-            "max_speed": 10,       # clamp speed
+            "speed": 1,
+            "sensitivity": 0.05,
+            "anesthetic": 0.0,
+            "downsample": 1,
+            "max_speed": 10,
+            # --- NEW KNOBS ---
+            "cerebellum_gain": 1.0,  # 0.0 = Clumsy, 1.0 = Precise
+            "memory_gain": 1.0,      # 0.0 = Pure Sensory, 1.0 = Balanced
+            "fear_gain": 1.0,        # 0.0 = Fearless
+            "energy_constraint": 1.0, # 1.0 = Starvation possible, 0.0 = Infinite Energy
+            "enable_sensory_cortex": 0.0,   # 0/1
+            "enable_thalamus": 0.0,         # 0/1
+            "sensory_blend": 0.0,           # 0..1
         }
 
         self.generation = 1
@@ -661,6 +825,8 @@ class SimulationState:
         self.whisk_amp = np.pi / 4.0
         self.whisker_hits = [False, False]
         self.vision_buffer: List[Dict[str, Any]] = []
+        self.last_collision = False
+        self.last_touch = 0.0
 
         if not os.path.exists("evolution_log.csv"):
             with open("evolution_log.csv", "w") as f:
@@ -969,6 +1135,9 @@ def step():
 
             current_atp = float(sim.brain.astrocyte.neuronal_atp)
             dist_cat = float(np.linalg.norm(sim.rat_pos - sim.predator.pos))
+            
+            # Use last_touch for arousal calculation
+            arousal_from_touch = sim.last_touch * 0.1
 
             if current_atp <= 0.01 or dist_cat < 1.0:
                 sim.die()
@@ -997,21 +1166,34 @@ def step():
             if sim.frustration < 0.1:
                 sim.serotonin = min(1.0, sim.serotonin + 0.005)
 
+            # Head direction update needs to happen before TRN modes are checked
+            new_heading = float(np.arctan2(sim.rat_vel[1], sim.rat_vel[0]))
+            angular_velocity = new_heading - sim.rat_heading
+            if angular_velocity > np.pi:
+                angular_velocity -= 2 * np.pi
+            if angular_velocity < -np.pi:
+                angular_velocity += 2 * np.pi
+            sim.rat_heading = new_heading
+
+            sim.brain.update_hd_cells(angular_velocity)
+            head_direction = sim.brain.get_head_direction()
+
             trn_modes = sim.brain.trn.modes
 
             # If both in burst: return microsleep on final iteration
             if trn_modes[0] == "BURST" and trn_modes[1] == "BURST":
                 if i == iterations - 1:
-                    soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level = sim.brain.process_votes(
+                    soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _ = sim.brain.process_votes(
                         sim.frustration,
                         sim.dopamine,
                         sim.rat_vel,
                         0,
                         0,
                         len(sim.pheromones),
-                        sim.rat_heading,
+                        head_direction,
                         sim.vision_buffer,
                         anesthetic_level=anesthetic_level,
+                        extra_arousal=arousal_from_touch,
                     )
                     return jsonify(
                         {
@@ -1056,20 +1238,22 @@ def step():
                     reward_signal = 1.0
                     sim.targets[idx] = sim._spawn_single_target()
                     break
+            
+            # NOTE: head direction is now computed above the microsleep check
 
-            # Head direction update
-            new_heading = float(np.arctan2(sim.rat_vel[1], sim.rat_vel[0]))
-            angular_velocity = new_heading - sim.rat_heading
-            if angular_velocity > np.pi:
-                angular_velocity -= 2 * np.pi
-            if angular_velocity < -np.pi:
-                angular_velocity += 2 * np.pi
-            sim.rat_heading = new_heading
+            # Extract config settings
+            cerebellum_gain = float(sim.config.get("cerebellum_gain", 1.0))
+            memory_gain = float(sim.config.get("memory_gain", 1.0))
+            fear_gain = float(sim.config.get("fear_gain", 1.0))
+            use_energy = float(sim.config.get("energy_constraint", 1.0)) > 0.5
+            
+            collision_flag = sim.last_collision
 
-            sim.brain.update_hd_cells(angular_velocity)
-            head_direction = sim.brain.get_head_direction()
+            sensory_blend = float(sim.config.get("sensory_blend", 0.0))
+            enable_sensory_cortex = float(sim.config.get("enable_sensory_cortex", 0.0)) > 0.5
+            enable_thalamus = float(sim.config.get("enable_thalamus", 0.0)) > 0.5
 
-            soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level = sim.brain.process_votes(
+            soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, pain, touch = sim.brain.process_votes(
                 sim.frustration,
                 sim.dopamine,
                 sim.rat_vel,
@@ -1079,10 +1263,23 @@ def step():
                 head_direction,
                 sim.vision_buffer,
                 anesthetic_level=anesthetic_level,
+                # Pass new knobs
+                fear_gain=fear_gain,
+                memory_gain=memory_gain,
+                energy_constraint=use_energy,
+                whisker_hits=sim.whisker_hits,
+                collision=collision_flag,
+                sensory_blend=sensory_blend,
+                enable_sensory_cortex=enable_sensory_cortex,
+                enable_thalamus=enable_thalamus,
+                extra_arousal=arousal_from_touch,
             )
+            sim.last_touch = touch # Update for next step
 
             sim.cerebellum.predict(sim.rat_pos, final_decision)
-            final_decision_corrected = final_decision + sim.cerebellum.correction_vector
+            
+            # --- APPLY CEREBELLUM GAIN ---
+            final_decision_corrected = final_decision + (sim.cerebellum.correction_vector * cerebellum_gain)
 
             sim.rat_vel = (sim.rat_vel * 0.85) + (final_decision_corrected * 0.15)
             sim.rat_vel = np.nan_to_num(sim.rat_vel)
@@ -1105,6 +1302,10 @@ def step():
             else:
                 sim.rat_pos = new_pos
                 sim.frustration = max(0.0, sim.frustration - 0.005)
+            sim.last_collision = hit # Update for next tick
+
+            # Pain increases frustration
+            sim.frustration = min(1.0, sim.frustration + pain * 0.05)
 
             sim.cerebellum.update(sim.rat_pos)
 
@@ -1223,6 +1424,23 @@ def config():
             sim.config["anesthetic"] = clamp(float(payload["anesthetic"]), 0.0, 1.0)
         if "downsample" in payload:
             sim.config["downsample"] = int(np.clip(int(payload["downsample"]), 1, 8))
+
+        # Add new checks
+        if "cerebellum_gain" in payload:
+            sim.config["cerebellum_gain"] = clamp(float(payload["cerebellum_gain"]), 0.0, 5.0)
+        if "memory_gain" in payload:
+            sim.config["memory_gain"] = clamp(float(payload["memory_gain"]), 0.0, 5.0)
+        if "fear_gain" in payload:
+            sim.config["fear_gain"] = clamp(float(payload["fear_gain"]), 0.0, 10.0)
+        if "energy_constraint" in payload:
+            sim.config["energy_constraint"] = clamp(float(payload["energy_constraint"]), 0.0, 1.0)
+
+        if "enable_sensory_cortex" in payload:
+            sim.config["enable_sensory_cortex"] = clamp(float(payload["enable_sensory_cortex"]), 0.0, 1.0)
+        if "enable_thalamus" in payload:
+            sim.config["enable_thalamus"] = clamp(float(payload["enable_thalamus"]), 0.0, 1.0)
+        if "sensory_blend" in payload:
+            sim.config["sensory_blend"] = clamp(float(payload["sensory_blend"]), 0.0, 1.0)
 
         return jsonify({"status": "updated", "config": sim.config})
 

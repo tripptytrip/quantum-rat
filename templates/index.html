@@ -167,6 +167,65 @@
                     <label for="chk-pip" class="text-xs text-zinc-400">Show Rat Vision (PiP)</label>
                 </div>
             </div>
+
+             <div class="bg-zinc-900 p-3 rounded border border-zinc-800 mt-2">
+                <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest border-b border-zinc-800 pb-1">Component Ablation</h3>
+                
+                <label class="text-xs text-zinc-400 flex justify-between">
+                    <span class="text-cyan-400">Cerebellum (Motor Fine-tuning)</span> 
+                    <span id="cer-val">1.0</span>
+                </label>
+                <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1 mb-3" 
+                       min="0" max="2" step="0.1" value="1" 
+                       oninput="updateConfig('cerebellum_gain', this.value); document.getElementById('cer-val').innerText = this.value">
+
+                <label class="text-xs text-zinc-400 flex justify-between">
+                    <span class="text-purple-400">Hippocampus (Memory Bias)</span> 
+                    <span id="mem-val">1.0</span>
+                </label>
+                <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1 mb-3" 
+                       min="0" max="3" step="0.1" value="1" 
+                       oninput="updateConfig('memory_gain', this.value); document.getElementById('mem-val').innerText = this.value">
+
+                <label class="text-xs text-zinc-400 flex justify-between">
+                    <span class="text-red-400">Amygdala (Fear Response)</span> 
+                    <span id="fear-val">1.0</span>
+                </label>
+                <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1 mb-3" 
+                       min="0" max="5" step="0.1" value="1" 
+                       oninput="updateConfig('fear_gain', this.value); document.getElementById('fear-val').innerText = this.value">
+                
+                <div class="flex items-center justify-between mt-1">
+                    <label class="text-xs text-yellow-400">Metabolic Limits (Starvation)</label>
+                    <input type="checkbox" id="chk-energy" checked 
+                           class="accent-yellow-500"
+                           onchange="updateConfig('energy_constraint', this.checked ? 1.0 : 0.0)">
+                </div>
+
+                <div class="mt-4 border-t border-zinc-800/50 pt-3 space-y-3">
+                  <h4 class="text-[10px] text-zinc-500 uppercase tracking-widest">Sensory Pathway</h4>
+
+                  <div class="flex items-center justify-between">
+                    <label class="text-xs text-cyan-300">Enable Sensory Cortex (V1/S1)</label>
+                    <input type="checkbox" id="chk-sensory" class="accent-cyan-500"
+                           onchange="updateConfig('enable_sensory_cortex', this.checked ? 1.0 : 0.0)">
+                  </div>
+
+                  <div class="flex items-center justify-between">
+                    <label class="text-xs text-green-300">Enable Thalamus Relay</label>
+                    <input type="checkbox" id="chk-thalamus" class="accent-green-500"
+                           onchange="updateConfig('enable_thalamus', this.checked ? 1.0 : 0.0)">
+                  </div>
+
+                  <label class="text-xs text-zinc-400 flex justify-between">
+                    <span class="text-yellow-300">Blend (Old ↔ New)</span>
+                    <span id="blend-val">0.0</span>
+                  </label>
+                  <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1"
+                         min="0" max="1" step="0.05" value="0"
+                         oninput="updateConfig('sensory_blend', this.value); document.getElementById('blend-val').innerText = this.value">
+                </div>
+            </div>
         </div>
     </div>
 
