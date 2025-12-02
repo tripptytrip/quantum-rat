@@ -8,6 +8,7 @@ import copy
 import csv
 import random
 import hashlib
+import math
 from collections import deque
 from threading import Lock
 from typing import Any, Dict, List, Tuple, Optional
@@ -553,7 +554,9 @@ class BasalGanglia:
         reward: float,
         learning_rate_mod: float,
         memory_gain: float = 1.0,  # <--- NEW PARAMETER
-        theta_readouts: Dict[str, float] = None
+        theta_readouts: Dict[str, float] = None,
+        mt_causal: bool = False,
+        mt_mod_gate: float = 0.2,
     ):
         sensory_mag = float(np.linalg.norm(sensory_vec))
         dopamine = self.pvlv.step(sensory_mag, reward)
@@ -566,8 +569,8 @@ class BasalGanglia:
         gate_activation = float(np.dot(self.w_gate, context) + dopamine)
         
         thr = 0.5
-        if sim.config.get("mt_causal", 0.0) > 0.5 and theta_readouts:
-            thr = 0.5 + sim.config.get("mt_mod_gate", 0.2) * (theta_readouts["entropy"] - theta_readouts["coherence"]) * 0.1
+        if mt_causal and theta_readouts:
+            thr = 0.5 + mt_mod_gate * (theta_readouts["entropy"] - theta_readouts["coherence"]) * 0.1
             thr = clamp(thr, 0.4, 0.6)
 
         gate_signal = 1.0 if gate_activation > thr else -1.0
@@ -733,11 +736,13 @@ class PlaceCellNetwork:
 
     def _create_centers(self, map_size: int):
         """Creates a grid of place cell centers."""
-        n_sqrt = int(np.sqrt(self.n_cells))
-        x = np.linspace(0, map_size, n_sqrt)
-        y = np.linspace(0, map_size, n_sqrt)
-        xv, yv = np.meshgrid(x, y)
-        return np.stack([xv.ravel(), yv.ravel()], axis=1)
+        n_side = int(math.ceil(np.sqrt(self.n_cells)))
+        # avoid walls; map coords are [0..map_size-1]
+        xs = np.linspace(1.0, map_size - 2.0, n_side)
+        ys = np.linspace(1.0, map_size - 2.0, n_side)
+        xv, yv = np.meshgrid(xs, ys)
+        centers = np.stack([xv.ravel(), yv.ravel()], axis=1)
+        return centers[: self.n_cells]
 
     def step(self, pos: np.ndarray, reward: float, target_pos: np.ndarray, threshold: float, lr: float, decay: float):
         # 1. Compute activations
@@ -818,6 +823,7 @@ class DendriticCluster:
             np.array([np.cos(np.pi / 3), np.sin(np.pi / 3)]),
             np.array([np.cos(2 * np.pi / 3), np.sin(2 * np.pi / 3)]),
         ]
+        self.pos_hat = None
         self.grid_phases = np.array([0.0, 0.0, 0.0])
         self.grid_scale = 0.8
 
@@ -1083,6 +1089,24 @@ class DendriticCluster:
         k = clamp(float(sensory_blend), 0.0, 1.0)
         sensory_vec = ((1 - k) * sensory_vec_old_gated) + (k * sensory_vec_new_gated)
 
+        theta_r_prev = self.mt_theta.get_readouts()
+
+        # --- INTERNAL PATH INTEGRATION (GRID/HD CAUSAL LOOP) ---
+        if self.pos_hat is None and rat_pos is not None:
+            self.pos_hat = np.array(rat_pos, dtype=float)
+
+        if self.pos_hat is not None:
+            base_dt = float(sim.config.get("dt", 0.05))
+            dt_scale = dt / max(base_dt, 1e-6)
+            self.pos_hat = self.pos_hat + np.array(rat_vel, dtype=float) * dt_scale
+
+            if sim.config.get("mt_causal", 0.0) > 0.5:
+                drift = (theta_r_prev["entropy"] - theta_r_prev["coherence"]) * 0.02
+                self.pos_hat += self.rng.normal(0.0, abs(drift), size=2)
+
+            self.pos_hat[0] = clamp(self.pos_hat[0], 1.0, sim.map_size - 2.0)
+            self.pos_hat[1] = clamp(self.pos_hat[1], 1.0, sim.map_size - 2.0)
+
         # --- PLACE CELL NAVIGATION ---
         place_metrics = {
             "place_nav_mag": 0.0,
@@ -1090,8 +1114,9 @@ class DendriticCluster:
             "place_goal_strength": 0.0
         }
         if self.place_cells and rat_pos is not None and target_pos is not None:
+            pos_for_place = self.pos_hat if self.pos_hat is not None else rat_pos
             place_acts, place_nav_vec = self.place_cells.step(
-                pos=rat_pos,
+                pos=pos_for_place,
                 reward=reward_signal,
                 target_pos=target_pos,
                 threshold=sim.config.get("goal_reward_threshold", 0.5),
@@ -1099,15 +1124,19 @@ class DendriticCluster:
                 decay=sim.config.get("place_decay", 0.001)
             )
             
-            gain = float(sim.config.get("place_nav_gain", 1.0))
-            sensory_vec += gain * place_nav_vec
-            
-            # Normalize sensory_vec after blending
-            norm = np.linalg.norm(sensory_vec)
-            if norm > 0:
-                sensory_vec /= norm
+            place_nav_mag = float(np.linalg.norm(place_nav_vec))
+            if place_nav_mag > 0:
+                place_nav_vec = place_nav_vec / place_nav_mag  # keep navigation direction unit-length
 
-            place_metrics["place_nav_mag"] = float(np.linalg.norm(place_nav_vec))
+            gain = float(sim.config.get("place_nav_gain", 1.0))
+            sensory_vec = sensory_vec + (gain * place_nav_vec * gain_sensory)
+
+            # Soft clamp magnitude to preserve LC/TRN gating meaning
+            mag = float(np.linalg.norm(sensory_vec))
+            if mag > 3.0:
+                sensory_vec *= (3.0 / (mag + 1e-9))
+
+            place_metrics["place_nav_mag"] = place_nav_mag
             place_metrics["place_act_max"] = float(np.max(place_acts))
             place_metrics["place_goal_strength"] = float(np.mean(np.abs(self.place_cells.goal_vec_w)))
 
@@ -1116,12 +1145,9 @@ class DendriticCluster:
         plasticity_mod = (ext_lactate / 0.5) * (0.5 + 0.5 * w_str)
         plasticity_mod *= lc_out["plasticity_gain"]
 
-        soma_r = self.soma.get_readouts()
-        theta_r = self.mt_theta.get_readouts()
-
         mt_plasticity_mult = 1.0
         if sim.config.get("mt_causal", 0.0) > 0.5:
-            mt_plast = 1.0 + sim.config.get("mt_mod_plasticity", 0.5) * (theta_r["coherence"] - theta_r["entropy"])
+            mt_plast = 1.0 + sim.config.get("mt_mod_plasticity", 0.5) * (theta_r_prev["coherence"] - theta_r_prev["entropy"])
             mt_plast = clamp(mt_plast, 0.5, 1.5)
             plasticity_mod *= mt_plast
             mt_plasticity_mult = mt_plast
@@ -1129,8 +1155,18 @@ class DendriticCluster:
         plasticity_mod = float(np.clip(plasticity_mod, 0.0, 5.0))
 
         # --- LOGIC UPDATE: Pass memory_gain ---
+        mt_causal_flag = float(sim.config.get("mt_causal", 0.0)) > 0.5
+        mt_gate_mod = float(sim.config.get("mt_mod_gate", 0.2))
         final_vector, gate_signal, internal_dopamine, mt_gate_thr = self.basal_ganglia.select_action_and_gate(
-            sensory_vec, current_memory, frustration, reward_signal, plasticity_mod, memory_gain=memory_gain, theta_readouts=theta_r
+            sensory_vec,
+            current_memory,
+            frustration,
+            reward_signal,
+            plasticity_mod,
+            memory_gain=memory_gain,
+            theta_readouts=theta_r_prev,
+            mt_causal=mt_causal_flag,
+            mt_mod_gate=mt_gate_mod,
         )
         
         # ... rest of the function remains the same ...
@@ -1161,6 +1197,10 @@ class DendriticCluster:
             mt_readout_tau = float(sim.config.get("mt_readout_tau", 0.5))
             self.mt_readout_soma = ema(self.mt_readout_soma, self.soma.avg_coherence, mt_readout_tau, dt)
             self.mt_readout_theta = ema(self.mt_readout_theta, self.mt_theta.avg_coherence, mt_readout_tau, dt)
+
+        # Readouts should reflect the current (post-step) state
+        soma_r = self.soma.get_readouts()
+        theta_r = self.mt_theta.get_readouts()
 
         if rat_pos is not None:
             self.record_experience(
@@ -2077,7 +2117,7 @@ def step():
                         min_dist = dist
                         target_pos = t
 
-            soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, pain, touch, place_metrics = sim.brain.process_votes(
+            soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, pain, touch, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr = sim.brain.process_votes(
                 sim.frustration,
                 sim.dopamine,
                 sim.rat_vel,
