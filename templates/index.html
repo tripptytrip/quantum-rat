@@ -240,18 +240,24 @@
                 <div id="view-research" class="hidden flex-col gap-4">
                      <div class="bg-zinc-900 p-4 rounded border border-blue-900/50 relative overflow-hidden" data-tip="learning_curve">
                         <div class="absolute top-0 right-0 p-1"><span class="text-[10px] bg-blue-900 text-blue-200 px-1 rounded">RESEARCH MODE</span></div>
-                        <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest font-bold">Spatial Learning Assay</h3>
+                        <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest font-bold">Laboratory Protocols</h3>
                         
+                        <select id="lab-protocol-select" class="w-full bg-zinc-800 text-xs text-zinc-300 border border-zinc-700 rounded p-1 mb-2 outline-none">
+                            <option value="open_field">1. Open Field Test (Anxiety/Entropy)</option>
+                            <option value="spatial_learning" disabled>2. Morris Water Maze (Coming Soon)</option>
+                            <option value="t_maze" disabled>3. T-Maze Alternation (Coming Soon)</option>
+                        </select>
+
                         <div class="flex gap-2 mb-3">
-                            <button onclick="toggleLab(true)" id="btn-start-lab" class="flex-1 btn bg-blue-900/20 text-blue-400 border-blue-800 hover:bg-blue-800/30 text-xs">Run Latency Test</button>
-                            <button onclick="toggleLab(false)" id="btn-stop-lab" class="flex-1 btn bg-red-900/20 text-red-400 border-red-800 hover:bg-red-800/30 text-xs hidden">Abort Test</button>
+                            <button onclick="toggleLab(true)" id="btn-start-lab" class="flex-1 btn bg-blue-900/20 text-blue-400 border-blue-800 hover:bg-blue-800/30 text-xs">Run Protocol</button>
+                            <button onclick="toggleLab(false)" id="btn-stop-lab" class="flex-1 btn bg-red-900/20 text-red-400 border-red-800 hover:bg-red-800/30 text-xs hidden">Abort</button>
                         </div>
 
                         <div class="relative bg-black border border-zinc-800 rounded w-full">
                             <canvas id="cvs-learning-curve" width="350" height="200" class="w-full"></canvas>
                             <div id="lab-overlay" class="absolute inset-0 flex items-center justify-center text-zinc-600 text-xs pointer-events-none">NO DATA</div>
                         </div>
-                        <p class="text-[10px] text-zinc-500 mt-2">Hypothesis: If <span class="text-green-400">Time-to-Target</span> decreases, spatial memory is forming.</p>
+                        <p id="lab-status-text" class="text-[10px] text-zinc-500 mt-2">Select a protocol to begin analysis.</p>
                     </div>
 
                     <div class="bg-zinc-900 p-3 rounded border border-zinc-800 group relative" data-tip="genetic_graph">
@@ -594,19 +600,32 @@
 
     window.toggleLab = async function(start) {
         const endpoint = start ? '/lab/start' : '/lab/stop';
-        await fetch(endpoint, {method: 'POST'});
+        const protocol = document.getElementById('lab-protocol-select').value;
+        
+        const body = start ? JSON.stringify({ test_id: protocol }) : "{}";
+
+        // FIX: Capture the response to get the new wall layout
+        const res = await fetch(endpoint, {
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'},
+            body: body
+        });
+        const data = await res.json();
         
         document.getElementById('btn-start-lab').classList.toggle('hidden', start);
         document.getElementById('btn-stop-lab').classList.toggle('hidden', !start);
         
         if(start) {
+            // FIX: If the backend sent new walls (e.g. empty box), rebuild the scene
+            if(data.walls) buildWalls(data.walls);
+
             ctxLearning.clearRect(0,0, cvsLearning.width, cvsLearning.height);
-            document.getElementById('lab-overlay').innerText = "TRIAL 1 IN PROGRESS...";
+            document.getElementById('lab-overlay').innerText = "ACQUIRING DATA...";
             isLabActive = true;
             pollLabResults();
         } else {
             isLabActive = false;
-            resetRat(); 
+            resetRat(); // This puts the maze back
         }
     }
 
@@ -615,53 +634,58 @@
         const res = await fetch('/lab/results');
         const data = await res.json();
         
-        if(!data.active && data.data.length > 0) {
+        if(!data.active && data.data_points > 0) {
             isLabActive = false; 
             document.getElementById('btn-start-lab').classList.remove('hidden');
             document.getElementById('btn-stop-lab').classList.add('hidden');
             document.getElementById('lab-overlay').innerText = "EXPERIMENT COMPLETE";
         }
         if(data.active) {
-            document.getElementById('lab-overlay').innerText = `RUNNING TRIAL ${data.current_trial}...`;
+            document.getElementById('lab-overlay').innerText = `RUNNING: ${data.protocol || '...'}...`;
             setTimeout(pollLabResults, 1000);
         }
         drawLearningCurve(data.data);
     }
 
-    function drawLearningCurve(trials) {
-        if(!trials || trials.length === 0) return;
-        document.getElementById('lab-overlay').style.opacity = trials.length > 0 ? 0 : 1;
+    function drawLearningCurve(dataPoints) {
+        if(!dataPoints || dataPoints.length === 0) return;
+        document.getElementById('lab-overlay').style.opacity = 0;
         
         const w = cvsLearning.width;
         const h = cvsLearning.height;
-        const pad = 30;
-        
         ctxLearning.clearRect(0, 0, w, h);
-        const maxFrames = Math.max(...trials.map(t => t.frames), 1000);
         
-        ctxLearning.strokeStyle = '#444';
+        // Simple Plot: Distance from Center (Y) over Time (X)
+        ctxLearning.strokeStyle = '#4ade80';
         ctxLearning.lineWidth = 1;
         ctxLearning.beginPath();
-        ctxLearning.moveTo(pad, pad);
-        ctxLearning.lineTo(pad, h-pad); 
-        ctxLearning.lineTo(w-pad, h-pad); 
-        ctxLearning.stroke();
         
-        ctxLearning.strokeStyle = '#4ade80';
-        ctxLearning.lineWidth = 2;
-        ctxLearning.beginPath();
+        const maxFrames = 1000; // Known max for Open Field
         
-        const xStep = (w - (pad*2)) / (10 - 1); 
-        
-        trials.forEach((t, i) => {
-            const x = pad + (i * xStep);
-            const y = (h - pad) - ((t.frames / maxFrames) * (h - pad*2));
+        dataPoints.forEach((pt, i) => {
+            const x = (pt.frame / maxFrames) * w;
+            // Map 0..20 distance to height. Center = top of graph.
+            const y = h - ((pt.dist_from_center / 20.0) * h);
+            
             if (i === 0) ctxLearning.moveTo(x, y);
             else ctxLearning.lineTo(x, y);
-            ctxLearning.fillStyle = '#fff';
-            ctxLearning.fillRect(x-2, y-2, 4, 4);
         });
         ctxLearning.stroke();
+        
+        // Add a "Center Zone" line
+        ctxLearning.strokeStyle = '#333';
+        ctxLearning.setLineDash([5, 5]);
+        ctxLearning.beginPath();
+        const centerLineY = h - ((12.0 / 20.0) * h); // 12.0 is radius of center zone
+        ctxLearning.moveTo(0, centerLineY);
+        ctxLearning.lineTo(w, centerLineY);
+        ctxLearning.stroke();
+        ctxLearning.setLineDash([]);
+        
+        // Update text
+        const lastPt = dataPoints[dataPoints.length-1];
+        document.getElementById('lab-status-text').innerHTML = 
+            `Dist from Center: <span class=\"text-white\">${lastPt.dist_from_center.toFixed(1)}</span> | Entropy: <span class=\"text-purple-400\">${lastPt.entropy.toFixed(2)}</span>`;
     }
 
     // --- LOOP ---
@@ -692,12 +716,20 @@
                 predatorMesh.rotation.x += 0.05; predatorMesh.rotation.y += 0.05;
             }
             if(data.targets) {
+                // Update active targets
                 data.targets.forEach((target_pos, index) => {
                     if (targetMeshes[index]) {
                         targetMeshes[index].position.set(target_pos[0], 0.5, target_pos[1]);
                         targetLights[index].intensity = 1.0 + Math.sin(performance.now() / 200 + index * 0.5) * 0.5;
+                        targetMeshes[index].visible = true; // Make sure it's visible
                     }
                 });
+
+                // FIX: Hide any extra target meshes that aren't in the current data
+                // (e.g., if lab mode has 0 targets, hide all 3 meshes)
+                for (let i = data.targets.length; i < targetMeshes.length; i++) {
+                    targetMeshes[i].visible = false;
+                }
             }
 
             pheromoneMeshes.forEach(m => m.visible = false);

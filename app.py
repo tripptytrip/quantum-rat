@@ -1873,94 +1873,136 @@ class SimulationState:
                     break
 
 
+# --- LAB PROTOCOLS ---
+
+class LabProtocol:
+    """Base class for all experiments."""
+    def __init__(self):
+        self.name = "Generic"
+        self.max_frames = 1000
+
+    def setup(self, sim):
+        """Reset map, place rat, set constraints."""
+        pass
+
+    def step(self, sim, timer) -> Optional[Dict[str, Any]]:
+        """Run per-frame logic. Return dict of data to log, or None."""
+        return None
+
+    def is_complete(self, sim, timer):
+        return timer >= self.max_frames
+
+
+class OpenFieldProtocol(LabProtocol):
+    """
+    Standard Anxiety/Exploration Test.
+    - Environment: Empty box.
+    - Metrics: Thigmotaxis (wall hugging) vs Center Time.
+    - Hypothesis: High Entropy rats should cross the center. High Anxiety rats hug walls.
+    """
+    def __init__(self):
+        self.name = "Open Field Test"
+        self.max_frames = 1000 # Approx 50 seconds at 20fps
+        self.center_zone_radius = 12.0 # Map is 40x40, center is ~20 units wide
+
+    def setup(self, sim):
+        # 1. Clear Map (Empty Box)
+        sim.map_size = 40
+        sim.occupancy_grid.fill(0)
+        # Add outer walls
+        sim.occupancy_grid[0, :] = 1
+        sim.occupancy_grid[-1, :] = 1
+        sim.occupancy_grid[:, 0] = 1
+        sim.occupancy_grid[:, -1] = 1
+
+        # 2. Reset Agents
+        sim.rat_pos = np.array([20.0, 20.0]) # Start in Center
+        sim.rat_vel = np.array([0.0, 0.0])
+        sim.predator.pos = np.array([-100.0, -100.0]) # Remove predator
+        sim.targets = [] # No food
+        sim.pheromones = []
+        
+        # 3. Reset Brain State (Fresh subject)
+        sim.frustration = 0.0
+        sim.dopamine = 0.5
+        sim.brain.astrocyte.glycogen = 1.0
+        
+        # Important: Ensure High Entropy start for testing curiosity
+        sim.brain.mt_theta.reset_wavefunction() 
+
+    def step(self, sim, timer):
+        # Calculate distance from center (20, 20)
+        dist_from_center = np.linalg.norm(sim.rat_pos - np.array([20.0, 20.0]))
+        in_center = dist_from_center < self.center_zone_radius
+        
+        # Calculate speed
+        speed = np.linalg.norm(sim.rat_vel)
+        
+        return {
+            "frame": timer,
+            "in_center": 1 if in_center else 0,
+            "dist_from_center": float(dist_from_center),
+            "speed": float(speed),
+            "entropy": float(sim.brain.mt_theta.readout["entropy"])
+        }
+
+
 class ScientificTestBed:
     def __init__(self, simulation):
         self.sim = simulation
         self.active = False
-        self.trial_data = []  # List of {trial: int, frames: int}
-        self.current_trial = 0
-        self.trial_timer = 0
-        self.max_trials = 10
-        # Fixed positions for the experiment
-        self.start_pos = np.array([5.0, 5.0])
-        self.target_pos = np.array([35.0, 35.0])
+        self.protocol = None
+        self.data_log = []
+        self.timer = 0
+        
+        # Registry of available tests
+        self.protocols = {
+            "open_field": OpenFieldProtocol,
+            # Future: "t_maze": TMazeProtocol,
+        }
 
-    def start_experiment(self):
-        print(">>> STARTING SCIENTIFIC ASSAY: SPATIAL LEARNING <<<")
+    def start_experiment(self, protocol_name="open_field"):
+        if protocol_name not in self.protocols:
+            print(f"Unknown protocol: {protocol_name}")
+            return
+
+        print(f">>> STARTING LAB: {protocol_name.upper()} <<<")
         self.active = True
-        self.trial_data = []
-        self.current_trial = 1
-        self.trial_timer = 0
-
-        # 1. Force a clean map (Open Field Box)
-        self.sim.map_size = 40
-        self.sim.occupancy_grid.fill(0)
-        self.sim.occupancy_grid[0, :] = 1
-        self.sim.occupancy_grid[-1, :] = 1
-        self.sim.occupancy_grid[:, 0] = 1
-        self.sim.occupancy_grid[:, -1] = 1
-
-        # 2. Remove Predator and distractions
-        self.sim.predator.pos = np.array([-10.0, -10.0])  # Move off map
-        self.sim.pheromones = []
-
-        # 3. Setup Trial 1
-        self._reset_rat_and_target()
+        self.data_log = []
+        self.timer = 0
+        
+        # Instantiate and run setup
+        ProtocolClass = self.protocols[protocol_name]
+        self.protocol = ProtocolClass()
+        self.protocol.setup(self.sim)
 
     def stop_experiment(self):
         self.active = False
+        self.protocol = None
         print(">>> EXPERIMENT ENDED <<<")
 
-    def _reset_rat_and_target(self):
-        # Reset physical location BUT KEEP BRAIN WEIGHTS (Learning preservation)
-        self.sim.rat_pos = self.start_pos.copy()
-        self.sim.rat_vel = np.array([0.0, 0.0])
-        self.sim.targets = [self.target_pos.copy()]  # Only one target
-
-        # Reset physiological needs so they don't interfere with the test
-        self.sim.frustration = 0.0
-        self.sim.dopamine = 0.5
-        self.sim.brain.astrocyte.glycogen = 1.0
-        self.sim.brain.astrocyte.neuronal_atp = 1.0
-
-        self.trial_timer = 0
-
     def step(self):
-        if not self.active:
+        if not self.active or not self.protocol:
             return
 
-        self.trial_timer += 1
+        self.timer += 1
+        
+        # Run protocol logic
+        data_point = self.protocol.step(self.sim, self.timer)
+        if data_point:
+            self.data_log.append(data_point)
 
-        # Check success condition (Target found)
-        dist = np.linalg.norm(self.sim.rat_pos - self.sim.targets[0])
-        if dist < 1.5:
-            # Success!
-            print(f"Trial {self.current_trial} Complete. Time: {self.trial_timer}")
-            self.trial_data.append({"trial": self.current_trial, "frames": self.trial_timer})
-
-            if self.current_trial < self.max_trials:
-                self.current_trial += 1
-                self._reset_rat_and_target()
-                # Optional: Reward boost to cement the memory
-                self.sim.brain.process_votes(
-                    frustration=0.0,
-                    dopamine=1.0,
-                    rat_vel=np.zeros(2),
-                    reward_signal=1.0,
-                    danger_level=0.0,
-                    pheromones_len=len(self.sim.pheromones),
-                    head_direction=self.sim.brain.get_head_direction(),
-                    vision_data=self.sim.vision_buffer,
-                    rat_pos=self.sim.rat_pos,
-                    target_pos=self.target_pos,
-                    config=self.sim.config,
-                    map_size=self.sim.map_size,
-                )
-            else:
-                self.stop_experiment()
+        # Check for completion
+        if self.protocol.is_complete(self.sim, self.timer):
+            self.stop_experiment()
 
     def get_results(self):
-        return {"active": self.active, "data": self.trial_data, "current_trial": self.current_trial}
+        return {
+            "active": self.active,
+            "protocol": self.protocol.name if self.protocol else None,
+            "data_points": len(self.data_log),
+            "data": self.data_log # Send full log to frontend for plotting
+        }
 
 
 sim = SimulationState()
@@ -2461,8 +2503,18 @@ def step():
 @app.route("/lab/start", methods=["POST"])
 def start_lab():
     with sim_lock:
-        sim.lab.start_experiment()
-        return jsonify({"status": "started"})
+        req = request.json or {}
+        test_type = req.get("test_id", "open_field") # Default to open field
+        sim.lab.start_experiment(test_type)
+        
+        # --- FIX: Generate wall list for the new lab map ---
+        walls = []
+        for y in range(sim.map_size):
+            for x in range(sim.map_size):
+                if sim.occupancy_grid[y, x] == 1:
+                    walls.append([x, y, 1, 1])
+                    
+        return jsonify({"status": "started", "test": test_type, "walls": walls})
 
 
 @app.route("/lab/stop", methods=["POST"])
