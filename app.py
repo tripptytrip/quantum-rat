@@ -1375,7 +1375,7 @@ class DendriticCluster:
                 near_death=near_death,
             )
 
-        return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp, pain, touch, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr
+        return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp, pain, touch, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine
 
 
 
@@ -2057,9 +2057,6 @@ def step():
                     }
                 )
 
-            tau_dopa = 10.0
-            decay_dopa = np.exp(-dt / tau_dopa)
-            sim.dopamine = max(0.1, sim.dopamine * decay_dopa)
             if sim.frustration < 0.1:
                 tau_ser = 10.0
                 alpha_ser = 1.0 - np.exp(-dt / tau_ser)
@@ -2170,7 +2167,8 @@ def step():
                                 min_dist = dist
                                 target_pos = t
 
-                    soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr = sim.brain.process_votes(
+                    # UPDATE UNPACKING: Add internal_dopamine at the end
+                    soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine = sim.brain.process_votes(
                         sim.frustration,
                         sim.dopamine,
                         sim.rat_vel,
@@ -2294,7 +2292,8 @@ def step():
                         min_dist = dist
                         target_pos = t
 
-            soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, pain, touch, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr = sim.brain.process_votes(
+            # UPDATE UNPACKING: Add internal_dopamine at the end
+            soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, pain, touch, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine = sim.brain.process_votes(
                 sim.frustration,
                 sim.dopamine,
                 sim.rat_vel,
@@ -2331,6 +2330,12 @@ def step():
                 map_size=sim.map_size,
             )
             sim.last_touch = touch # Update for next step
+
+            # --- NEW: VISUALIZE INTERNAL DOPAMINE ---
+            # Instead of simple decay, let the Basal Ganglia drive the UI bar.
+            # Smooth it slightly so it doesn't jitter too much
+            target_dopa = float(np.clip(internal_dopamine, 0.0, 1.0))
+            sim.dopamine = 0.8 * sim.dopamine + 0.2 * target_dopa
 
             if panic_signal > 0.05 and panic_motor_bias > 0.0:
                 diff = sim.rat_pos - sim.predator.pos
