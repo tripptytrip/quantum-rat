@@ -1953,6 +1953,143 @@ class OpenFieldProtocol(LabProtocol):
         }
 
 
+class TMazeProtocol(LabProtocol):
+    """
+    T-Maze Delayed Alternation Task.
+    - Phase 1 (Forced): Block one arm, force rat to other. Reward 1.
+    - Phase 2 (Delay): Teleport to start, wait.
+    - Phase 3 (Choice): Open both arms. Reward 2 is in the OPPOSITE arm.
+    - Metric: % Correct Alternation.
+    """
+    def __init__(self):
+        self.name = "T-Maze Alternation"
+        self.max_frames = 2000
+        self.phase = "setup" # setup, forced, delay, choice, complete
+        self.forced_arm = "left" # Randomize later
+        self.choice_timer = 0
+        self.delay_duration = 100 # Frames to wait in start box
+        
+        # Coordinates (approximate for 40x40 map)
+        self.start_pos = np.array([20.0, 5.0])
+        self.t_junction = np.array([20.0, 30.0])
+        self.left_arm = np.array([5.0, 30.0])
+        self.right_arm = np.array([35.0, 30.0])
+
+    def setup(self, sim):
+        # 1. Reset Simulation
+        sim.map_size = 40
+        sim.occupancy_grid.fill(1) # Start filled (solid walls)
+        
+        # 2. Carve the "T"
+        # Vertical Stem
+        sim.occupancy_grid[5:31, 18:23] = 0 
+        # Horizontal Bar
+        sim.occupancy_grid[28:33, 5:36] = 0
+        # Start Box
+        sim.occupancy_grid[2:6, 18:23] = 0
+
+        # 3. Randomize Forced Arm
+        self.forced_arm = "left" if random.random() < 0.5 else "right"
+        target_pos = self.left_arm if self.forced_arm == "left" else self.right_arm
+        
+        # 4. Block the OTHER arm (The one we aren't forcing)
+        if self.forced_arm == "left":
+            # Block Right Arm entrance
+            sim.occupancy_grid[28:33, 23:36] = 1 
+        else:
+            # Block Left Arm entrance
+            sim.occupancy_grid[28:33, 5:18] = 1
+
+        # 5. Place Rat & Target
+        sim.rat_pos = self.start_pos.copy()
+        sim.rat_vel = np.array([0.0, 0.0])
+        sim.targets = [target_pos]
+        sim.predator.pos = np.array([-100.0, -100.0]) # No cat
+        
+        # 6. Reset Brain (High Energy for the test)
+        sim.frustration = 0.0
+        sim.dopamine = 0.5
+        sim.brain.astrocyte.glycogen = 1.0
+        sim.brain.astrocyte.neuronal_atp = 1.0
+        sim.brain.pfc.memory.fill(0.0) # Clear WM
+        
+        self.phase = "forced"
+        print(f"LAB: T-Maze Started. Forced Arm: {self.forced_arm.upper()}")
+
+    def step(self, sim, timer):
+        # Logic FSM
+        dist_to_target = 999.0
+        if len(sim.targets) > 0:
+            dist_to_target = np.linalg.norm(sim.rat_pos - sim.targets[0])
+
+        # --- PHASE 1: FORCED RUN ---
+        if self.phase == "forced":
+            # If rat reached the forced target
+            if dist_to_target < 1.5:
+                # Reward!
+                sim.score += 1
+                sim.dopamine = 1.0
+                sim.brain.astrocyte.glycogen = 1.0 # Refuel for the thinking phase
+                
+                print("LAB: Forced arm reached. Entering DELAY.")
+                self.phase = "delay"
+                self.choice_timer = 0
+                
+                # Teleport back to start
+                sim.rat_pos = self.start_pos.copy()
+                sim.rat_vel = np.array([0.0, 0.0])
+                sim.targets = [] # Hide food during delay
+
+        # --- PHASE 2: DELAY (Working Memory Test) ---
+        elif self.phase == "delay":
+            self.choice_timer += 1
+            # Lock rat in start box
+            sim.rat_pos = self.start_pos.copy() 
+            
+            if self.choice_timer > self.delay_duration:
+                print("LAB: Delay complete. Opening both arms.")
+                self.phase = "choice"
+                
+                # UNBLOCK the T-Maze (Open both arms)
+                sim.occupancy_grid[28:33, 5:36] = 0 
+                
+                # Place Reward in the OPPOSITE arm
+                new_target = self.right_arm if self.forced_arm == "left" else self.left_arm
+                sim.targets = [new_target]
+                
+                # We need to manually trigger a wall update for the frontend
+                # (This is a hack: we just mark the sim as needing a visual refresh if we could)
+                # Ideally, we send 'walls' in the step payload, but for now we rely on the loop.
+
+        # --- PHASE 3: CHOICE ---
+        elif self.phase == "choice":
+            if dist_to_target < 1.5:
+                print("LAB: SUCCESS! Rat alternated correctly.")
+                sim.score += 10 # Big reward
+                sim.dopamine = 1.0
+                self.phase = "complete"
+            
+            # Check for Failure (Entering the WRONG arm)
+            # Wrong arm is the one we forced previously
+            wrong_arm_pos = self.left_arm if self.forced_arm == "left" else self.right_arm
+            dist_to_wrong = np.linalg.norm(sim.rat_pos - wrong_arm_pos)
+            
+            if dist_to_wrong < 3.0:
+                print("LAB: FAIL! Rat perseverated.")
+                sim.frustration = 1.0 # Punishment
+                self.phase = "complete"
+
+        return {
+            "frame": timer,
+            "phase": 1 if self.phase == "forced" else (2 if self.phase == "delay" else 3),
+            "correct": 1 if self.phase == "complete" and sim.dopamine > 0.8 else 0,
+            # Pass map_update flag if we changed walls? (Handled by frontend poll usually)
+        }
+
+    def is_complete(self, sim, timer):
+        return self.phase == "complete" or timer >= self.max_frames
+
+
 class ScientificTestBed:
     def __init__(self, simulation):
         self.sim = simulation
@@ -1964,7 +2101,7 @@ class ScientificTestBed:
         # Registry of available tests
         self.protocols = {
             "open_field": OpenFieldProtocol,
-            # Future: "t_maze": TMazeProtocol,
+            "t_maze": TMazeProtocol,
         }
 
     def start_experiment(self, protocol_name="open_field"):
@@ -2253,9 +2390,18 @@ def step():
                             stress_learning_gain=float(sim.config.get("stress_learning_gain", 0.5)),
                         )
                         sim.phantom_trace = sim.brain.replay.last_replay_trace[-200:]
+                    current_walls = None
+                    if sim.lab.active:
+                        current_walls = []
+                        for y in range(sim.map_size):
+                            for x in range(sim.map_size):
+                                if sim.occupancy_grid[y, x] == 1:
+                                    current_walls.append([x, y, 1, 1])
+
                     return jsonify(
                         {
                             "rat": sim.rat_pos.tolist(),
+                            "walls": current_walls,
                             "targets": [t.tolist() for t in sim.targets],
                             "predator": sim.predator.pos.tolist(),
                             "brain": serialize_state(soma_density, d_theta, d_grid, downsample),
@@ -2465,10 +2611,19 @@ def step():
                 if len(sim.pheromones) > 1000:
                     sim.pheromones.pop(0)
 
+        current_walls = None
+        if sim.lab.active:
+            current_walls = []
+            for y in range(sim.map_size):
+                for x in range(sim.map_size):
+                    if sim.occupancy_grid[y, x] == 1:
+                        current_walls.append([x, y, 1, 1])
+
         # Return last-frame state
         return jsonify(
             {
                 "rat": sim.rat_pos.tolist(),
+                "walls": current_walls,
                 "targets": [t.tolist() for t in sim.targets],
                 "predator": sim.predator.pos.tolist(),
                 "brain": serialize_state(soma_density, d_theta, d_grid, downsample),

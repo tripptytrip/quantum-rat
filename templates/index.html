@@ -242,11 +242,11 @@
                         <div class="absolute top-0 right-0 p-1"><span class="text-[10px] bg-blue-900 text-blue-200 px-1 rounded">RESEARCH MODE</span></div>
                         <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest font-bold">Laboratory Protocols</h3>
                         
-                        <select id="lab-protocol-select" class="w-full bg-zinc-800 text-xs text-zinc-300 border border-zinc-700 rounded p-1 mb-2 outline-none">
-                            <option value="open_field">1. Open Field Test (Anxiety/Entropy)</option>
-                            <option value="spatial_learning" disabled>2. Morris Water Maze (Coming Soon)</option>
-                            <option value="t_maze" disabled>3. T-Maze Alternation (Coming Soon)</option>
-                        </select>
+        <select id="lab-protocol-select" class="w-full bg-zinc-800 text-xs text-zinc-300 border border-zinc-700 rounded p-1 mb-2 outline-none">
+            <option value="open_field">1. Open Field Test (Anxiety/Entropy)</option>
+            <option value="t_maze">2. T-Maze Alternation (Working Memory)</option>
+            <option value="spatial_learning" disabled>3. Morris Water Maze (Coming Soon)</option>
+        </select>
 
                         <div class="flex gap-2 mb-3">
                             <button onclick="toggleLab(true)" id="btn-start-lab" class="flex-1 btn bg-blue-900/20 text-blue-400 border-blue-800 hover:bg-blue-800/30 text-xs">Run Protocol</button>
@@ -735,6 +735,12 @@
                 for (let i = data.targets.length; i < targetMeshes.length; i++) {
                     targetMeshes[i].visible = false;
                 }
+            }
+
+            // NEW: Check for dynamic wall updates from Lab Mode
+            if (data.walls) {
+                // Rebuild walls when payload includes updates
+                buildWalls(data.walls);
             }
 
             pheromoneMeshes.forEach(m => m.visible = false);
