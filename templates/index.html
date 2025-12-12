@@ -246,6 +246,7 @@
             <option value="open_field">1. Open Field Test (Anxiety/Entropy)</option>
             <option value="t_maze">2. T-Maze Alternation (Working Memory)</option>
             <option value="spatial_learning">3. Morris Water Maze (Spatial Consolidation)</option>
+            <option value="survival">4. Survival Arena (Predator Evasion)</option>
         </select>
 
                         <div class="flex gap-2 mb-3">
@@ -660,7 +661,29 @@
         const h = cvsLearning.height;
         ctxLearning.clearRect(0, 0, w, h);
         
-        // Check data type: Continuous (Open Field) vs Discrete (Water Maze)
+        // Check data type: Survival (alive), Discrete (latency), or Continuous (open field)
+        if (dataPoints[0].alive !== undefined) {
+            ctxLearning.strokeStyle = '#4ade80';
+            ctxLearning.lineWidth = 2;
+            ctxLearning.beginPath();
+            const maxFrames = 2000;
+            dataPoints.forEach((pt, i) => {
+                const x = (pt.frame / maxFrames) * w;
+                const y = h - (Math.min(pt.dist, 20.0) / 20.0) * h;
+                if (i === 0) ctxLearning.moveTo(x, y);
+                else ctxLearning.lineTo(x, y);
+            });
+            ctxLearning.stroke();
+
+            const last = dataPoints[dataPoints.length-1];
+            const status = last.alive ? "ALIVE" : "DEAD";
+            const color = last.alive ? "text-green-400" : "text-red-500";
+            document.getElementById('lab-status-text').innerHTML = 
+                `Status: <span class="${color}">${status}</span> | Distance: ${last.dist.toFixed(1)}`;
+            return;
+        }
+
+        // Continuous (Open Field) vs Discrete (Water Maze)
         const isDiscrete = dataPoints[0].latency !== undefined;
 
         ctxLearning.strokeStyle = '#4ade80';

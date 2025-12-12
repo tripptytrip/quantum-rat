@@ -1098,9 +1098,12 @@ class DendriticCluster:
         target_pos: Optional[np.ndarray] = None,
         config: Dict[str, Any] = None,
         map_size: int = 40,
+        predator_pos=None,
     ):
         if config is None:
             config = {}
+        sim_predator_pos = np.array(predator_pos) if predator_pos is not None else np.array([0.0, 0.0])
+        rat_pos_arr = np.array(rat_pos, dtype=float) if rat_pos is not None else np.array([0.0, 0.0])
         # ---- Apply genome weights so evolution actually matters ----
         w_amyg = clamp(self.weights.get("amygdala", 1.0), 0.1, 10.0)
         w_str  = clamp(self.weights.get("striatum", 1.0), 0.1, 10.0)
@@ -1356,8 +1359,38 @@ class DendriticCluster:
         pump_map = soma_input * atp_availability
         d_soma, _ = self.soma.step(pump_map, lfp_signal=0.0, anesthetic_conc=anesthetic_level)
 
+        # --- QUANTUM EVASION: PROJECTING THREATS ---
+        # 1. Where is the predator going?
+        # We project a "Cone of Death" into the future.
+        pred_vec = sim_predator_pos - rat_pos_arr
+        
+        # Create a threat map on the microtubule grid
+        threat_map = np.zeros((self.mt_theta.Ny, self.mt_theta.Nx))
+        
+        if danger_level > 0.1:
+            # Map predator angle to our internal cylinder
+            pred_angle = float(np.arctan2(pred_vec[1], pred_vec[0]))
+            if pred_angle < 0:
+                pred_angle += 2 * np.pi
+            
+            # Convert angle to column index (0..12)
+            pred_col = int((pred_angle / (2 * np.pi)) * self.mt_theta.Nx) % self.mt_theta.Nx
+            
+            # Paint a "Bar of Entropy" blocking that direction
+            threat_map[:, pred_col] = 5.0 
+            # Spread to neighbors slightly (uncertainty)
+            threat_map[:, (pred_col + 1) % self.mt_theta.Nx] = 2.0
+            threat_map[:, (pred_col - 1) % self.mt_theta.Nx] = 2.0
+
+        # 2. Apply to Theta Pump
         theta_pump = (0.5 + (pheromones_len / 200.0)) * atp_availability
-        d_theta, _ = self.mt_theta.step(theta_pump, lfp_signal=0.0, anesthetic_conc=anesthetic_level)
+        theta_pump_grid = np.ones((self.mt_theta.Ny, self.mt_theta.Nx)) * theta_pump
+        
+        # Apply the Threat Shield
+        theta_pump_grid -= (threat_map * 2.0)
+        theta_pump_grid = np.clip(theta_pump_grid, 0.0, 2.0)
+
+        d_theta, _ = self.mt_theta.step(theta_pump_grid, lfp_signal=0.0, anesthetic_conc=anesthetic_level)
 
         # Microtubule Causal Readouts
         if config.get("mt_causal", 0.0) > 0.5:
@@ -1390,20 +1423,35 @@ class Predator:
     def __init__(self, pos):
         self.pos = np.array(pos)
         self.vel = np.array([0.0, 0.0])
-        # CHANGED: Reduced from 0.35 to 0.22 to give the rat a running chance
-        self.speed = 0.22
+        # Slightly faster now to force the rat to be smart
+        self.speed = 0.24 
 
-    def hunt(self, rat_pos, grid, map_size, dt_scale: float = 1.0):
-        diff = rat_pos - self.pos
-        dist = np.linalg.norm(diff)
-        if dist > 0:
-            desired_vel = (diff / dist) * (self.speed * dt_scale)
+    def hunt(self, rat_pos, rat_vel, grid, map_size, dt_scale: float = 1.0):
+        # 1. Calculate Intercept
+        dist = float(np.linalg.norm(rat_pos - self.pos))
+        
+        # Simple "Time to Impact" calculation
+        # If we are far, look further ahead. If close, look at the rat.
+        lookahead = clamp(dist / self.speed, 0.0, 15.0)
+        
+        # Predicted position of the rat (Target Leading)
+        predicted_pos = rat_pos + (rat_vel * lookahead)
+        
+        # 2. Vector Navigation
+        diff = predicted_pos - self.pos
+        dist_pred = np.linalg.norm(diff)
+        
+        if dist_pred > 0:
+            desired_vel = (diff / dist_pred) * (self.speed * dt_scale)
             next_pos = self.pos + desired_vel
+            
+            # Simple Wall Collision Check
             nx, ny = int(next_pos[0]), int(next_pos[1])
             if 0 <= nx < map_size and 0 <= ny < map_size:
                 if grid[ny, nx] == 0:
                     self.pos = next_pos
                 else:
+                    # Slide along wall
                     if grid[ny, int(self.pos[0])] == 0:
                         self.pos[1] = next_pos[1]
                     elif grid[int(self.pos[1]), nx] == 0:
@@ -2211,6 +2259,67 @@ class MorrisWaterMazeProtocol(LabProtocol):
 
     def is_complete(self, sim, timer):
         return self.finished
+
+
+class SurvivalProtocol(LabProtocol):
+    """
+    Predator Evasion / Survival Test.
+    - Setup: Small arena. 1 Rat. 1 Aggressive Predator.
+    - Metric: Frames alive.
+    - Hypothesis: Predictive evasion (Quantum Shield) increases survival time vs reactive fleeing.
+    """
+    def __init__(self):
+        self.name = "Survival Arena (Thunderdome)"
+        self.max_frames = 2000
+        self.finished = False
+        self.survival_time = 0
+
+    def setup(self, sim):
+        # 1. Small Arena (20x20) - Harder to run away
+        sim.map_size = 20
+        sim.occupancy_grid = np.zeros((20, 20), dtype=int)
+        sim.occupancy_grid[0, :] = 1
+        sim.occupancy_grid[-1, :] = 1
+        sim.occupancy_grid[:, 0] = 1
+        sim.occupancy_grid[:, -1] = 1
+
+        # 2. Place Combatants
+        sim.rat_pos = np.array([10.0, 10.0])
+        sim.rat_vel = np.array([0.0, 0.0])
+        sim.predator.pos = np.array([2.0, 2.0]) # Start corner
+        sim.predator.speed = 0.24 # Fast
+        
+        sim.targets = [] # No food, only survival
+        
+        # 3. Reset Stats
+        sim.frustration = 0.0
+        sim.dopamine = 1.0 # High focus required
+        sim.brain.astrocyte.glycogen = 1.0
+        
+        print("LAB: Survival Arena Started. GOOD LUCK.")
+
+    def step(self, sim, timer):
+        if self.finished:
+            return None
+        
+        # Check Death
+        dist = np.linalg.norm(sim.rat_pos - sim.predator.pos)
+        if dist < 1.0:
+            print(f"LAB: Rat Caught at frame {timer}!")
+            self.finished = True
+            self.survival_time = timer
+        
+        # Return simple survival counter
+        return {
+            "frame": timer,
+            "alive": 1 if not self.finished else 0,
+            "dist": float(dist)
+        }
+
+    def is_complete(self, sim, timer):
+        return self.finished or timer >= self.max_frames
+
+
 class ScientificTestBed:
     def __init__(self, simulation):
         self.sim = simulation
@@ -2224,6 +2333,7 @@ class ScientificTestBed:
             "open_field": OpenFieldProtocol,
             "t_maze": TMazeProtocol,
             "spatial_learning": MorrisWaterMazeProtocol,
+            "survival": SurvivalProtocol,
         }
 
     def start_experiment(self, protocol_name="open_field"):
@@ -2501,6 +2611,7 @@ def step():
                         target_pos=target_pos,
                         config=sim.config,
                         map_size=sim.map_size,
+                        predator_pos=sim.predator.pos,
                     )
                     # --- OFFLINE HIPPOCAMPAL REPLAY ---
                     if float(sim.config.get("enable_replay", 0.0)) > 0.5:
@@ -2644,6 +2755,7 @@ def step():
                 target_pos=target_pos,
                 config=sim.config,
                 map_size=sim.map_size,
+                predator_pos=sim.predator.pos,
             )
             sim.last_touch = touch # Update for next step
 
@@ -2722,9 +2834,10 @@ def step():
 
             sim.cerebellum.update(sim.rat_pos)
 
-            # Only hunt if we aren't doing a science experiment
-            if not sim.lab.active:
-                sim.predator.hunt(sim.rat_pos, sim.occupancy_grid, sim.map_size, dt_scale=dt_scale)
+            # Only hunt if we aren't doing a science experiment, unless the protocol is survival
+            allow_hunt = (not sim.lab.active) or (sim.lab.active and isinstance(sim.lab.protocol, SurvivalProtocol))
+            if allow_hunt:
+                sim.predator.hunt(sim.rat_pos, sim.rat_vel, sim.occupancy_grid, sim.map_size, dt_scale=dt_scale)
 
             base_p = 0.2
             p_drop = 1.0 - (1.0 - base_p) ** dt_scale

@@ -120,7 +120,5 @@ print(f"Brain State: {state['stats']['status']}")
 - Phase 2: The Binding. Implementing "Oscillatory" buffers to stitch discrete steps into apparent continuity. *(Completed via TRN/Theta)*
 - Phase 3: The Brownout. Implementing failure modes where low-quality data degrades performance. *(In Progress)*
 
-## 📄 License
 
-MIT
 
