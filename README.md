@@ -14,7 +14,7 @@ It does not simulate a story. It simulates a nervous system.
 
 ## Project Philosophy
 
-This architecture is the software implementation of the Architect Philosophy. It rejects the illusion of continuous flow in favor of the Quantized Self, modeling intelligence as a series of discrete state transitions rather than a smooth narrative stream.
+This architecture is the software implementation of the [Architect Philosophy](https://medium.com/@mikeyakerr/the-architect-a-philosophy-of-mind-for-the-coherence-oriented-thinker-4d13dad43fe6). It rejects the illusion of continuous flow in favor of the Quantized Self, modeling intelligence as a series of discrete state transitions rather than a smooth narrative stream.
 
 ### Core Axioms
 
