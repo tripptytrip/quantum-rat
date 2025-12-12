@@ -753,16 +753,22 @@
             lastRatPos.copy(newRatPos);
 
             if(data.predator) {
-                predatorMesh.position.set(data.predator[0], 0.5, data.predator[1]);
-                predatorMesh.rotation.x += 0.05; predatorMesh.rotation.y += 0.05;
+                // FIX: If predator is at the "holding pen" (-100), hide it entirely
+                if (data.predator[0] < -50) {
+                    predatorMesh.visible = false;
+                } else {
+                    predatorMesh.visible = true;
+                    predatorMesh.position.set(data.predator[0], 0.5, data.predator[1]);
+                    predatorMesh.rotation.x += 0.05; predatorMesh.rotation.y += 0.05;
+                }
             }
             if(data.targets) {
                 // Update active targets
                 data.targets.forEach((target_pos, index) => {
                     if (targetMeshes[index]) {
+                        targetMeshes[index].visible = true; // Ensure visible
                         targetMeshes[index].position.set(target_pos[0], 0.5, target_pos[1]);
                         targetLights[index].intensity = 1.0 + Math.sin(performance.now() / 200 + index * 0.5) * 0.5;
-                        targetMeshes[index].visible = true; // Make sure it's visible
                     }
                 });
 
