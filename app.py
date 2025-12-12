@@ -266,59 +266,65 @@ class Astrocyte:
 
     def step(self, basal_firing: float, cortical_load: float, dt: float = 0.05):
         """
-        basal_firing: Standard motor/sensory activity (Cheap)
-        cortical_load: 0.0 to 1.0, representing PFC/Hippocampal usage (Expensive)
+        Re-tuned metabolic model.
+        - basal_firing: standard upkeep (0.0 to ~1.0)
+        - cortical_load: intense computation (0.0 to 1.0)
         """
         basal_firing = float(max(0.0, basal_firing))
         cortical_load = float(max(0.0, cortical_load))
 
-        # METABOLIC COST OF THOUGHT LOGIC:
-        # Cortex is 5x more expensive than reflex loops
-        cortical_demand = cortical_load * 5.0 
+        # 1. Tuning Demand (The "Cost")
+        # OLD: cortical_demand = cortical_load * 5.0 (Too aggressive)
+        # NEW: cortical_demand = cortical_load * 2.5 (High, but sustainable for short bursts)
+        cortical_demand = cortical_load * 2.5 
         
-        # Total Glutamate/Demand signal
-        demand = (basal_firing * 0.1) + (cortical_demand * 0.2)
+        # Total energy demand signal
+        # Basal firing is cheap; Cortical load is the main driver of depletion.
+        demand = (basal_firing * 0.05) + (cortical_demand * 0.1)
         self.glutamate_load += demand
 
-        # Glycogenolysis (from glycogen -> lactate in astrocyte)
-        glycolysis_rate = 0.05 * self.glutamate_load * self.glycogen
+        # 2. Glycogenolysis (Spending the Battery)
+        # We reduce the rate multiplier from 0.05 to 0.02 to slow the drain.
+        glycolysis_rate = 0.02 * self.glutamate_load * self.glycogen
         self.glycogen -= glycolysis_rate * dt
-        
-        # FIX: Use self.astro_lactate (not astrocyte_lactate)
         self.astro_lactate += glycolysis_rate * dt
 
-        # Transport astro -> ECS (MCT4)
-        # FIX: Use self.astro_lactate
-        flux_astro_to_ecs = self.Vmax_MCT4 * (self.astro_lactate / (self.Km_MCT4 + self.astro_lactate + 1e-9))
+        # 3. Glycogenesis (Recharging the Battery)
+        # Real astrocytes recharge from blood glucose constantly.
+        # We add a recharge term that works when demand is low.
+        target_glycogen = 1.0
+        recharge_rate = 0.01 * (target_glycogen - self.glycogen)
+        
+        # Only recharge if we aren't under heavy load
+        if self.glutamate_load < 0.5:
+             self.glycogen += recharge_rate * dt
 
-        # Transport ECS -> neuron (MCT2)
+        # 4. Transport to Neurons (Feeding the brain)
+        flux_astro_to_ecs = self.Vmax_MCT4 * (self.astro_lactate / (self.Km_MCT4 + self.astro_lactate + 1e-9))
         flux_ecs_to_neuron = self.Vmax_MCT2 * (self.ext_lactate / (self.Km_MCT2 + self.ext_lactate + 1e-9))
 
-        # FIX: Use self.astro_lactate
         self.astro_lactate -= flux_astro_to_ecs * dt
         self.ext_lactate += (flux_astro_to_ecs - flux_ecs_to_neuron) * dt
         self.neuron_lactate += flux_ecs_to_neuron * dt
 
-        # OxPhos: neuron lactate -> ATP
+        # 5. ATP Production (The Result)
         conversion_rate = 2.0 * self.neuron_lactate
         atp_production = conversion_rate * 3.0
         self.neuron_lactate -= conversion_rate * dt
 
         basal_metabolism = 0.005
-        
-        # Activity cost now includes the heavy cost of thought
-        activity_cost = (basal_firing * 0.05) + (cortical_demand * 0.1)
+        # Scaled down activity cost
+        activity_cost = (basal_firing * 0.01) + (cortical_demand * 0.05)
         
         self.neuronal_atp += (atp_production - (basal_metabolism + activity_cost)) * dt
 
-        # Decay demand
-        self.glutamate_load *= 0.9
+        # Decay demand signal
+        self.glutamate_load *= 0.95
 
         # Clamp compartments
         self.glycogen = float(np.clip(self.glycogen, 0.0, 1.0))
         self.neuronal_atp = float(np.clip(self.neuronal_atp, 0.0, 1.5))
 
-        # FIX: Use self.astro_lactate
         self.astro_lactate = float(max(0.0, self.astro_lactate))
         self.ext_lactate = float(max(0.0, self.ext_lactate))
         self.neuron_lactate = float(max(0.0, self.neuron_lactate))
