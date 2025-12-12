@@ -518,15 +518,29 @@ class Thalamus:
               vis: Dict[str, Any],
               som: Dict[str, Any],
               topdown_attention: float = 0.0,
-              relay_gain: float = 1.0
+              relay_gain: float = 1.0,
+              noise_level: float = 0.0,  # <--- NEW PARAMETER
+              rng=None                   # <--- NEW PARAMETER
               ) -> Dict[str, Any]:
-        
+
+        # Standard Gating
         sensory_gain = relay_gain * clamp(0.8 + 0.04 * topdown_attention, 0.5, 1.5)
-        
         self.ema_gain = 0.9 * self.ema_gain + 0.1 * sensory_gain
         
         relay_vec = vis.get("vis_vec", np.array([0.0, 0.0])) * self.ema_gain
         relay_features = vis.get("features", np.array([0.0, 0.0, 0.0, 0.0])) * self.ema_gain
+
+        # --- MICROTUBULE NOISE INJECTION ---
+        # If Entropy is high, the "Signal" is corrupted by quantum noise.
+        # This prevents the Cortex from overfitting to a confusing reality.
+        if noise_level > 0.01 and rng is not None:
+            # Add jitter to the perceived vector
+            jitter = rng.normal(0.0, 1.0, size=2) * noise_level
+            relay_vec += jitter
+            
+            # Add static to the features (uncertainty)
+            feat_jitter = rng.normal(0.0, 1.0, size=4) * (noise_level * 0.5)
+            relay_features = np.clip(relay_features + feat_jitter, 0.0, 1.0)
         
         return {
             "relay_vec": relay_vec,
@@ -574,6 +588,7 @@ class BasalGanglia:
         theta_readouts: Dict[str, float] = None,
         mt_causal: bool = False,
         mt_mod_gate: float = 0.2,
+        exploration_bias: float = 0.0,  # <--- NEW PARAMETER (Curiosity)
     ):
         sensory_mag = float(np.linalg.norm(sensory_vec))
         dopamine = self.pvlv.step(sensory_mag, reward)
@@ -597,6 +612,16 @@ class BasalGanglia:
         
         # Use effective_memory here
         motor_out = (sensory_vec * w_sensory) + (effective_memory * w_memory)
+
+        # --- ENTROPY-DRIVEN EXPLORATION ---
+        # If Exploration Bias (Entropy) is high, we ignore the weights and jitter.
+        if exploration_bias > 0.01:
+            # Generate random curiosity vector
+            curiosity_vec = self.rng.normal(0.0, 1.0, size=2)
+            
+            # Blend it in. High bias = High randomness.
+            # If bias is 1.0, the rat is purely hallucinating actions.
+            motor_out = (motor_out * (1.0 - exploration_bias)) + (curiosity_vec * exploration_bias * 2.0)
 
         if learning_rate_mod > 0.1:
             lr = 0.01 * learning_rate_mod
@@ -1120,13 +1145,42 @@ class DendriticCluster:
         gain_sensory = max(0.05, gain_sensory)
         gain_memory = max(0.05, gain_memory)
 
+        theta_r_prev = self.mt_theta.get_readouts()
+
+        # --- ENTROPY vs COHERENCE LOGIC ---
+        # "Curiosity" is defined as the gap between Entropy (Confusion) and Coherence (Understanding).
+        # Range: 0.0 (Lucid) to 1.0 (Totally Confused)
+        
+        epistemic_entropy = theta_r_prev.get("entropy", 0.0)
+        coherence = theta_r_prev.get("coherence", 1.0)
+        
+        # Calculate the delta
+        confusion_index = clamp(epistemic_entropy - coherence, 0.0, 1.0)
+        
+        # Scale for specific subsystems
+        # Thalamus gets mild noise (distortion)
+        thalamic_noise = confusion_index * 0.3 
+        
+        # Basal Ganglia gets exploration bias (jitter)
+        # We assume if 'mt_causal' is True, we let this drive behavior.
+        bg_exploration = 0.0
+        if config.get("mt_causal", 0.0) > 0.5:
+            # Amplify the effect so it's visible
+            bg_exploration = confusion_index * config.get("mt_mod_explore", 0.5)
+
         sensory_vec_old_gated = sensory_vec_old_raw * gain_sensory
         sensory_vec_new_gated = np.array([0.0, 0.0])
 
         if enable_sensory_cortex and sensory_vec_new_raw is not None:
             if enable_thalamus:
                 thalamus_out = self.thalamus.relay(
-                    vis_data, som_data, topdown_attention=pfc_drive, relay_gain=gain_sensory * lc_out["attention_gain"]
+                    vis_data, 
+                    som_data, 
+                    topdown_attention=pfc_drive, 
+                    relay_gain=gain_sensory * lc_out["attention_gain"],
+                    # NEW ARGS:
+                    noise_level=thalamic_noise,
+                    rng=self.rng
                 )
                 sensory_vec_new_gated = thalamus_out["relay_vec"]
             else:
@@ -1135,8 +1189,6 @@ class DendriticCluster:
         # 3. Blend the two gated vectors
         k = clamp(float(sensory_blend), 0.0, 1.0)
         sensory_vec = ((1 - k) * sensory_vec_old_gated) + (k * sensory_vec_new_gated)
-
-        theta_r_prev = self.mt_theta.get_readouts()
 
         # --- INTERNAL PATH INTEGRATION (GRID/HD CAUSAL LOOP) ---
         if self.pos_hat is None and rat_pos is not None:
@@ -1215,6 +1267,8 @@ class DendriticCluster:
             theta_readouts=theta_r_prev,
             mt_causal=mt_causal_flag,
             mt_mod_gate=mt_gate_mod,
+            # NEW ARG:
+            exploration_bias=bg_exploration
         )
         
         # ... rest of the function remains the same ...
