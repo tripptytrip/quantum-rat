@@ -519,29 +519,49 @@ class Thalamus:
               som: Dict[str, Any],
               topdown_attention: float = 0.0,
               relay_gain: float = 1.0,
-              noise_level: float = 0.0,  # <--- NEW PARAMETER
-              rng=None                   # <--- NEW PARAMETER
+              noise_level: float = 0.0,
+              rng=None,
+              atp_level: float = 1.0  # <--- NEW PARAMETER
               ) -> Dict[str, Any]:
 
-        # Standard Gating
-        sensory_gain = relay_gain * clamp(0.8 + 0.04 * topdown_attention, 0.5, 1.5)
+        # --- SEARCHLIGHT / ATTENTION BIAS ---
+        # "Focus" requires both Cortex demand (attention) AND Metabolic fuel (ATP).
+        # A tired brain cannot maintain top-down inhibition.
+        
+        # 1. Calculate Metabolic Capacity for Focus
+        # If ATP drops below 0.3 (Brain Fog), focus capability collapses.
+        focus_capacity = clamp((atp_level - 0.1) / 0.4, 0.0, 1.0)
+        
+        # 2. Determine Effective Focus
+        # High Attention + High ATP = Strong Searchlight
+        effective_focus = clamp(topdown_attention * focus_capacity, 0.0, 1.0)
+        
+        # 3. Gain Modulation (The Searchlight Beam)
+        # If focused, we amplify the "Signal" (relay_gain).
+        focus_gain_boost = 1.0 + (0.5 * effective_focus)
+        sensory_gain = relay_gain * focus_gain_boost
+        
         self.ema_gain = 0.9 * self.ema_gain + 0.1 * sensory_gain
         
         relay_vec = vis.get("vis_vec", np.array([0.0, 0.0])) * self.ema_gain
         relay_features = vis.get("features", np.array([0.0, 0.0, 0.0, 0.0])) * self.ema_gain
 
-        # --- MICROTUBULE NOISE INJECTION ---
-        # If Entropy is high, the "Signal" is corrupted by quantum noise.
-        # This prevents the Cortex from overfitting to a confusing reality.
-        if noise_level > 0.01 and rng is not None:
+        # 4. Noise Inhibition (Gating Distractions)
+        # A focused mind suppresses Entropy. A tired mind lets it in.
+        # If effective_focus is 1.0, we block 90% of the noise.
+        noise_suppression = effective_focus * 0.9
+        effective_noise = noise_level * (1.0 - noise_suppression)
+
+        # Apply the (potentially suppressed) noise
+        if effective_noise > 0.01 and rng is not None:
             # Add jitter to the perceived vector
-            jitter = rng.normal(0.0, 1.0, size=2) * noise_level
+            jitter = rng.normal(0.0, 1.0, size=2) * effective_noise
             relay_vec += jitter
             
-            # Add static to the features (uncertainty)
-            feat_jitter = rng.normal(0.0, 1.0, size=4) * (noise_level * 0.5)
+            # Add static to the features
+            feat_jitter = rng.normal(0.0, 1.0, size=4) * (effective_noise * 0.5)
             relay_features = np.clip(relay_features + feat_jitter, 0.0, 1.0)
-        
+
         return {
             "relay_vec": relay_vec,
             "relay_features": relay_features,
@@ -978,25 +998,62 @@ class DendriticCluster:
 
     def offline_replay_and_consolidate(self, steps: int, bridge_prob: float, strength: float, stress_learning_gain: float = 0.5):
         """
-        Apply replay to existing STC→BG consolidation path.
-        This should be *small* and *bounded* to avoid destabilising online policy.
+        Quantum Replay:
+        1. Inject memory buffer into Microtubule Field (Dreaming).
+        2. Check for Coherence (Finding a 'Simple Rule').
+        3. If Coherent -> Consolidate to BG & Wipe Hippocampus (Collapse).
+        4. If Entropic -> Do nothing (Keep memories for later).
         """
         items = self.replay.run(steps=steps, bridge_prob=bridge_prob)
         if not items:
             return
 
-        for it in items:
-            sens = it["sens"]
-            mem = it["mem"]
-            activity_proxy = np.array([np.linalg.norm(sens), np.linalg.norm(mem), 1.0], dtype=float)
+        # 1. The "Dream": Pump Microtubules with Memory Data
+        # Calculate a composite "Memory Vector" from the replay batch to simulate the "gist"
+        avg_mem_vec = np.mean([it["mem"] for it in items], axis=0)
+        pump_strength = float(np.linalg.norm(avg_mem_vec))
+        
+        # Pump the Theta field to see if it "Harmonizes" (finds coherence)
+        # We do a quick burst of steps to simulate "Search for Rule"
+        coherence_sum = 0.0
+        for _ in range(3): 
+            # Create a pump map derived from the memory intensity
+            pump_map = np.ones((self.mt_theta.Ny, self.mt_theta.Nx)) * pump_strength * 0.5
+            self.mt_theta.step(pump_map)
+            coherence_sum += self.mt_theta.avg_coherence
+        
+        avg_coherence = coherence_sum / 3.0
 
-            prp_like = 1.0 if it["salience"] > 0.8 else 0.0
-            consolidation_vec = self.update_stc(activity_proxy, prp_like)
+        # 2. Quantum Collapse Decision
+        # Threshold: If Coherence > 0.4, we have found a low-entropy explanation for the data.
+        if avg_coherence > 0.4:
+            
+            # Boost Consolidation Strength (The Rule is Valid)
+            # High Coherence = Stronger hard-coding into habits
+            consolidation_strength = strength * (1.0 + avg_coherence * 2.0)
+            
+            for it in items:
+                sens = it["sens"]
+                mem = it["mem"]
+                activity_proxy = np.array([np.linalg.norm(sens), np.linalg.norm(mem), 1.0], dtype=float)
 
-            if float(np.max(consolidation_vec)) > 0.1:
-                scale = 1.0 + stress_learning_gain * clamp(float(it["salience"]), 0.0, 2.0)
-                self.basal_ganglia.w_gate += (0.001 * strength * scale) * consolidation_vec
-                self.basal_ganglia.w_gate = np.clip(self.basal_ganglia.w_gate, -1.0, 1.0)
+                prp_like = 1.0 if it["salience"] > 0.8 else 0.0
+                consolidation_vec = self.update_stc(activity_proxy, prp_like)
+
+                if float(np.max(consolidation_vec)) > 0.1:
+                    scale = 1.0 + stress_learning_gain * clamp(float(it["salience"]), 0.0, 2.0)
+                    # Apply to Basal Ganglia (Long Term Storage)
+                    self.basal_ganglia.w_gate += (0.001 * consolidation_strength * scale) * consolidation_vec
+                    self.basal_ganglia.w_gate = np.clip(self.basal_ganglia.w_gate, -1.0, 1.0)
+
+            # 3. The "Collapse": Wiping Clean
+            # The complex possibilities have collapsed into a simple weight update.
+            # Reset the MT field (Entropy Drop)
+            self.mt_theta.reset_wavefunction()
+            
+            # "Wipe Clean" the Hippocampus (Buffer Clear)
+            # The rat has "slept on it" and learned. It is now ready for a new "Day".
+            self.replay.buffer.buf.clear()
 
     def process_votes(
         self,
@@ -1180,7 +1237,9 @@ class DendriticCluster:
                     relay_gain=gain_sensory * lc_out["attention_gain"],
                     # NEW ARGS:
                     noise_level=thalamic_noise,
-                    rng=self.rng
+                    rng=self.rng,
+                    # NEW ARG:
+                    atp_level=self.astrocyte.neuronal_atp 
                 )
                 sensory_vec_new_gated = thalamus_out["relay_vec"]
             else:
