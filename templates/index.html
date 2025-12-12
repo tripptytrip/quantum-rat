@@ -89,8 +89,13 @@
 
     <div class="flex flex-1 gap-4 min-h-0">
         <div class="flex-1 bg-black border border-cyan-900/30 rounded relative overflow-hidden shadow-[0_0_15px_rgba(0,255,255,0.1)]">
-            <div id="three-container"></div>
-            <div id="status-overlay" class="absolute top-4 left-4 text-cyan-500 text-sm font-bold pointer-events-none" style="text-shadow: 0 0 5px cyan;">AWAKE</div>
+            <div id="three-container" class="transition-all duration-500"></div>
+            
+            <div id="energy-vignette" class="absolute inset-0 pointer-events-none opacity-0 transition-opacity duration-1000"
+                 style="background: radial-gradient(circle, transparent 30%, rgba(10,10,10,0.9) 90%); z-index: 20;">
+            </div>
+
+            <div id="status-overlay" class="absolute top-4 left-4 text-cyan-500 text-sm font-bold pointer-events-none" style="text-shadow: 0 0 5px cyan; z-index: 30;">AWAKE</div>
             <div id="pip-label">SENSORY: VIBRISSAL (8Hz)</div>
         </div>
 
@@ -288,7 +293,7 @@
         },
         "physio": {
             title: "Physiological State",
-            text: "Real-time tracking of biological variables. High frustration drives exploration; Dopamine reinforces learning; ATP limits physical movement."
+            text: "Real-time tracking. High frustration drives exploration. Low ATP triggers 'Brain Fog'—shutting down cortical planning to conserve energy."
         },
         "speed": {
             title: "Simulation Speed",
@@ -778,9 +783,28 @@
                 document.getElementById('val-atp').innerText = atpPercent + '%';
                 document.getElementById('bar-atp').style.width = atpPercent + '%';
                 
+                // --- UPDATED VISUAL FEEDBACK ---
+                const vignette = document.getElementById('energy-vignette');
+                const threeCont = document.getElementById('three-container');
+
                 if (atpVal < 0.3) {
-                    document.body.style.filter = "grayscale(100%) blur(2px)";
+                    // 1. Fade in the dark vignette (Tunnel Vision)
+                    vignette.style.opacity = 1;
+                    
+                    // 2. Blur/Desaturate ONLY the 3D view, not the UI
+                    threeCont.style.filter = "grayscale(70%) blur(1px)";
+                    
+                    // Optional: Pulse the ATP bar red
+                    document.getElementById('bar-atp').classList.add('bg-red-500');
+                    document.getElementById('bar-atp').classList.remove('bg-yellow-400');
                 } else {
+                    vignette.style.opacity = 0;
+                    threeCont.style.filter = "none";
+                    
+                    document.getElementById('bar-atp').classList.remove('bg-red-500');
+                    document.getElementById('bar-atp').classList.add('bg-yellow-400');
+                    
+                    // Clean up global filter if it was stuck from previous version
                     document.body.style.filter = "none";
                 }
 

@@ -264,24 +264,37 @@ class Astrocyte:
         self.Vmax_MCT2 = 0.6
         self.Km_MCT2 = 0.5
 
-    def step(self, firing_rate: float, dt: float = 0.05):
-        firing_rate = float(max(0.0, firing_rate))
+    def step(self, basal_firing: float, cortical_load: float, dt: float = 0.05):
+        """
+        basal_firing: Standard motor/sensory activity (Cheap)
+        cortical_load: 0.0 to 1.0, representing PFC/Hippocampal usage (Expensive)
+        """
+        basal_firing = float(max(0.0, basal_firing))
+        cortical_load = float(max(0.0, cortical_load))
 
-        # Demand signal
-        demand = firing_rate * 0.1
+        # METABOLIC COST OF THOUGHT LOGIC:
+        # Cortex is 5x more expensive than reflex loops
+        cortical_demand = cortical_load * 5.0 
+        
+        # Total Glutamate/Demand signal
+        demand = (basal_firing * 0.1) + (cortical_demand * 0.2)
         self.glutamate_load += demand
 
         # Glycogenolysis (from glycogen -> lactate in astrocyte)
         glycolysis_rate = 0.05 * self.glutamate_load * self.glycogen
         self.glycogen -= glycolysis_rate * dt
+        
+        # FIX: Use self.astro_lactate (not astrocyte_lactate)
         self.astro_lactate += glycolysis_rate * dt
 
         # Transport astro -> ECS (MCT4)
+        # FIX: Use self.astro_lactate
         flux_astro_to_ecs = self.Vmax_MCT4 * (self.astro_lactate / (self.Km_MCT4 + self.astro_lactate + 1e-9))
 
         # Transport ECS -> neuron (MCT2)
         flux_ecs_to_neuron = self.Vmax_MCT2 * (self.ext_lactate / (self.Km_MCT2 + self.ext_lactate + 1e-9))
 
+        # FIX: Use self.astro_lactate
         self.astro_lactate -= flux_astro_to_ecs * dt
         self.ext_lactate += (flux_astro_to_ecs - flux_ecs_to_neuron) * dt
         self.neuron_lactate += flux_ecs_to_neuron * dt
@@ -292,16 +305,20 @@ class Astrocyte:
         self.neuron_lactate -= conversion_rate * dt
 
         basal_metabolism = 0.005
-        activity_cost = firing_rate * 0.05
+        
+        # Activity cost now includes the heavy cost of thought
+        activity_cost = (basal_firing * 0.05) + (cortical_demand * 0.1)
+        
         self.neuronal_atp += (atp_production - (basal_metabolism + activity_cost)) * dt
 
         # Decay demand
         self.glutamate_load *= 0.9
 
-        # Clamp compartments (IMPORTANT stability)
+        # Clamp compartments
         self.glycogen = float(np.clip(self.glycogen, 0.0, 1.0))
         self.neuronal_atp = float(np.clip(self.neuronal_atp, 0.0, 1.5))
 
+        # FIX: Use self.astro_lactate
         self.astro_lactate = float(max(0.0, self.astro_lactate))
         self.ext_lactate = float(max(0.0, self.ext_lactate))
         self.neuron_lactate = float(max(0.0, self.neuron_lactate))
@@ -991,7 +1008,11 @@ class DendriticCluster:
         pfc_drive: float = 0.0,
         precomputed_lc_out: Optional[Dict[str, float]] = None,
         target_pos: Optional[np.ndarray] = None,
+        config: Dict[str, Any] = None,
+        map_size: int = 40,
     ):
+        if config is None:
+            config = {}
         # ---- Apply genome weights so evolution actually matters ----
         w_amyg = clamp(self.weights.get("amygdala", 1.0), 0.1, 10.0)
         w_str  = clamp(self.weights.get("striatum", 1.0), 0.1, 10.0)
@@ -1001,12 +1022,38 @@ class DendriticCluster:
 
         neural_activity = float(np.linalg.norm(rat_vel) + frustration)
         
-        # --- LOGIC UPDATE: Energy Constraint Switch ---
-        real_atp, ext_lactate = self.astrocyte.step(neural_activity, dt=dt)
+        # --- METABOLIC COST OF THOUGHT ---
+        # 1. Check current energy reserves BEFORE spending them
+        current_atp = self.astrocyte.neuronal_atp
+        
+        # 2. Define thresholds
+        # If ATP < 0.3, we enter "Brain Fog" (Metabolic Conservation)
+        cognitive_threshold = 0.3 
+        
+        cortical_gain = 1.0
+        cortical_load = 1.0 # We intend to think hard
+        
+        if energy_constraint and current_atp < cognitive_threshold:
+            # METABOLIC CRASH:
+            # The brain cannot afford to run the Cortex/PFC.
+            # 1. Shut down cortical gain (Logic reverts to Basal Ganglia reflexes)
+            cortical_gain = 0.1 
+            # 2. Reduce the metabolic load passed to the Astrocyte (we stopped thinking)
+            cortical_load = 0.1 
+            # 3. Hinder attention
+            pfc_drive *= 0.1
+
+        # 3. Run the Astrocyte Step with split costs
+        real_atp, ext_lactate = self.astrocyte.step(
+            basal_firing=neural_activity, 
+            cortical_load=cortical_load, 
+            dt=dt
+        )
+
         if energy_constraint:
             atp_availability = real_atp
         else:
-            atp_availability = 1.0 # Infinite energy mode
+            atp_availability = 1.0 
 
         if reward_signal > 0:
             self.time_cells.reset()
@@ -1096,16 +1143,16 @@ class DendriticCluster:
             self.pos_hat = np.array(rat_pos, dtype=float)
 
         if self.pos_hat is not None:
-            base_dt = float(sim.config.get("dt", 0.05))
+            base_dt = float(config.get("dt", 0.05))
             dt_scale = dt / max(base_dt, 1e-6)
             self.pos_hat = self.pos_hat + np.array(rat_vel, dtype=float) * dt_scale
 
-            if sim.config.get("mt_causal", 0.0) > 0.5:
+            if config.get("mt_causal", 0.0) > 0.5:
                 drift = (theta_r_prev["entropy"] - theta_r_prev["coherence"]) * 0.02
                 self.pos_hat += self.rng.normal(0.0, abs(drift), size=2)
 
-            self.pos_hat[0] = clamp(self.pos_hat[0], 1.0, sim.map_size - 2.0)
-            self.pos_hat[1] = clamp(self.pos_hat[1], 1.0, sim.map_size - 2.0)
+            self.pos_hat[0] = clamp(self.pos_hat[0], 1.0, map_size - 2.0)
+            self.pos_hat[1] = clamp(self.pos_hat[1], 1.0, map_size - 2.0)
 
         # --- PLACE CELL NAVIGATION ---
         place_metrics = {
@@ -1119,16 +1166,16 @@ class DendriticCluster:
                 pos=pos_for_place,
                 reward=reward_signal,
                 target_pos=target_pos,
-                threshold=sim.config.get("goal_reward_threshold", 0.5),
-                lr=sim.config.get("place_goal_lr", 0.02),
-                decay=sim.config.get("place_decay", 0.001)
+                threshold=config.get("goal_reward_threshold", 0.5),
+                lr=config.get("place_goal_lr", 0.02),
+                decay=config.get("place_decay", 0.001)
             )
             
             place_nav_mag = float(np.linalg.norm(place_nav_vec))
             if place_nav_mag > 0:
                 place_nav_vec = place_nav_vec / place_nav_mag  # keep navigation direction unit-length
 
-            gain = float(sim.config.get("place_nav_gain", 1.0))
+            gain = float(config.get("place_nav_gain", 1.0))
             sensory_vec = sensory_vec + (gain * place_nav_vec * gain_sensory)
 
             # Soft clamp magnitude to preserve LC/TRN gating meaning
@@ -1140,14 +1187,15 @@ class DendriticCluster:
             place_metrics["place_act_max"] = float(np.max(place_acts))
             place_metrics["place_goal_strength"] = float(np.mean(np.abs(self.place_cells.goal_vec_w)))
 
-        current_memory = self.pfc.memory * gain_memory
+        # Apply the metabolic limit to working memory
+        current_memory = self.pfc.memory * gain_memory * cortical_gain
 
         plasticity_mod = (ext_lactate / 0.5) * (0.5 + 0.5 * w_str)
         plasticity_mod *= lc_out["plasticity_gain"]
 
         mt_plasticity_mult = 1.0
-        if sim.config.get("mt_causal", 0.0) > 0.5:
-            mt_plast = 1.0 + sim.config.get("mt_mod_plasticity", 0.5) * (theta_r_prev["coherence"] - theta_r_prev["entropy"])
+        if config.get("mt_causal", 0.0) > 0.5:
+            mt_plast = 1.0 + config.get("mt_mod_plasticity", 0.5) * (theta_r_prev["coherence"] - theta_r_prev["entropy"])
             mt_plast = clamp(mt_plast, 0.5, 1.5)
             plasticity_mod *= mt_plast
             mt_plasticity_mult = mt_plast
@@ -1155,8 +1203,8 @@ class DendriticCluster:
         plasticity_mod = float(np.clip(plasticity_mod, 0.0, 5.0))
 
         # --- LOGIC UPDATE: Pass memory_gain ---
-        mt_causal_flag = float(sim.config.get("mt_causal", 0.0)) > 0.5
-        mt_gate_mod = float(sim.config.get("mt_mod_gate", 0.2))
+        mt_causal_flag = float(config.get("mt_causal", 0.0)) > 0.5
+        mt_gate_mod = float(config.get("mt_mod_gate", 0.2))
         final_vector, gate_signal, internal_dopamine, mt_gate_thr = self.basal_ganglia.select_action_and_gate(
             sensory_vec,
             current_memory,
@@ -1193,8 +1241,8 @@ class DendriticCluster:
         d_theta, _ = self.mt_theta.step(theta_pump, lfp_signal=0.0, anesthetic_conc=anesthetic_level)
 
         # Microtubule Causal Readouts
-        if sim.config.get("mt_causal", 0.0) > 0.5:
-            mt_readout_tau = float(sim.config.get("mt_readout_tau", 0.5))
+        if config.get("mt_causal", 0.0) > 0.5:
+            mt_readout_tau = float(config.get("mt_readout_tau", 0.5))
             self.mt_readout_soma = ema(self.mt_readout_soma, self.soma.avg_coherence, mt_readout_tau, dt)
             self.mt_readout_theta = ema(self.mt_readout_theta, self.mt_theta.avg_coherence, mt_readout_tau, dt)
 
@@ -1223,7 +1271,8 @@ class Predator:
     def __init__(self, pos):
         self.pos = np.array(pos)
         self.vel = np.array([0.0, 0.0])
-        self.speed = 0.35
+        # CHANGED: Reduced from 0.35 to 0.22 to give the rat a running chance
+        self.speed = 0.22
 
     def hunt(self, rat_pos, grid, map_size, dt_scale: float = 1.0):
         diff = rat_pos - self.pos
@@ -1293,7 +1342,7 @@ class SimulationState:
             "sensitivity": 0.05,
             "anesthetic": 0.0,
             "downsample": 1,
-            "max_speed": 10,
+            "max_speed": 15,
             "dt": 0.05,  # master timestep (kept at legacy default)
             "seed": None,
             "deterministic": 0.0,
@@ -1302,13 +1351,13 @@ class SimulationState:
             "memory_gain": 1.0,      # 0.0 = Pure Sensory, 1.0 = Balanced
             "fear_gain": 1.0,        # 0.0 = Fearless
             "energy_constraint": 1.0, # 1.0 = Starvation possible, 0.0 = Infinite Energy
-            "enable_sensory_cortex": 0.0,   # 0/1
-            "enable_thalamus": 0.0,         # 0/1
-            "sensory_blend": 0.0,           # 0..1
+            "enable_sensory_cortex": 1.0,   # 0/1
+            "enable_thalamus": 1.0,         # 0/1
+            "sensory_blend": 1.0,           # 0..1
             # --- REPLAY / HIPPOCAMPUS ---
-            "enable_replay": 0.0,       # 0/1
-            "replay_steps": 6,          # how many replay items per microsleep
-            "replay_len": 240,          # ring buffer capacity (snapshots)
+            "enable_replay": 1.0,       # 0/1
+            "replay_steps": 20,          # how many replay items per microsleep
+            "replay_len": 1000,          # ring buffer capacity (snapshots)
             "replay_strength": 0.15,    # how much replay affects consolidation
             "replay_bridge_prob": 0.25, # chance to mix in an older memory
             # Microtubule neighbor interpretation
@@ -1321,9 +1370,9 @@ class SimulationState:
             "panic_motor_bias": 0.5,
             "stress_learning_gain": 0.5,
             # --- NEW PLACE CELL KNOBS ---
-            "enable_place_cells": 0.0,        # 0/1
-            "place_n": 64,                    # number of place cells
-            "place_sigma": 2.5,               # spatial tuning width in tiles
+            "enable_place_cells": 1.0,        # 0/1
+            "place_n": 256,                    # number of place cells
+            "place_sigma": 1.5,               # spatial tuning width in tiles
             "place_lr": 0.01,                 # Hebbian learning rate
             "place_decay": 0.001,             # weight decay per step
             "place_goal_lr": 0.02,            # learning rate for goal vector readout
@@ -1331,7 +1380,7 @@ class SimulationState:
             "place_nav_blend": 0.35,          # blend proportion into final_vector
             "goal_reward_threshold": 0.5,     # what counts as rewarding for goal learning
             # --- NEW MICROTUBULE CAUSAL KNOBS ---
-            "mt_causal": 0.0,                 # 0/1
+            "mt_causal": 1.0,                 # 0/1
             "mt_mod_plasticity": 0.5,         # 0..2 multiplier strength
             "mt_mod_explore": 0.3,            # 0..2 exploration noise multiplier strength
             "mt_mod_gate": 0.2,               # 0..2 gate threshold modulation
@@ -1780,7 +1829,20 @@ class ScientificTestBed:
                 self.current_trial += 1
                 self._reset_rat_and_target()
                 # Optional: Reward boost to cement the memory
-                sim.brain.process_votes(0, 1.0, np.zeros(2), 1.0, 0, 0, 0, [], rat_pos=self.sim.rat_pos, target_pos=self.target_pos)
+                self.sim.brain.process_votes(
+                    frustration=0.0,
+                    dopamine=1.0,
+                    rat_vel=np.zeros(2),
+                    reward_signal=1.0,
+                    danger_level=0.0,
+                    pheromones_len=len(self.sim.pheromones),
+                    head_direction=self.sim.brain.get_head_direction(),
+                    vision_data=self.sim.vision_buffer,
+                    rat_pos=self.sim.rat_pos,
+                    target_pos=self.target_pos,
+                    config=self.sim.config,
+                    map_size=self.sim.map_size,
+                )
             else:
                 self.stop_experiment()
 
@@ -2019,6 +2081,8 @@ def step():
                         pfc_drive=pfc_drive,
                         precomputed_lc_out=lc_out,
                         target_pos=target_pos,
+                        config=sim.config,
+                        map_size=sim.map_size,
                     )
                     # --- OFFLINE HIPPOCAMPAL REPLAY ---
                     if float(sim.config.get("enable_replay", 0.0)) > 0.5:
@@ -2150,6 +2214,8 @@ def step():
                 pfc_drive=pfc_drive,
                 precomputed_lc_out=lc_out,
                 target_pos=target_pos,
+                config=sim.config,
+                map_size=sim.map_size,
             )
             sim.last_touch = touch # Update for next step
 
