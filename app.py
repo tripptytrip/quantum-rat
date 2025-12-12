@@ -2090,6 +2090,127 @@ class TMazeProtocol(LabProtocol):
         return self.phase == "complete" or timer >= self.max_frames
 
 
+class MorrisWaterMazeProtocol(LabProtocol):
+    """
+    Spatial Learning / Long Term Memory Test.
+    - Setup: Open arena. Target FIXED in one location (beyond visual range from start).
+    - Trial: Rat starts at random locations (N, S, E, W).
+    - Inter-Trial: Massive Replay/Consolidation burst (Simulating 'Sleep').
+    - Metric: Latency to find target. Should decrease over trials.
+    """
+    def __init__(self):
+        self.name = "Morris Water Maze"
+        self.max_frames_per_trial = 1500
+        self.total_trials = 10
+        
+        self.current_trial = 1
+        self.trial_timer = 0
+        self.finished = False
+        
+        # Fixed Target Location (North-East Quadrant)
+        # 40x40 Map. Center is 20,20. Target at 28, 28.
+        # Vision range is 15.0, so starting at 5,5 (dist ~32) makes it invisible.
+        self.target_pos = np.array([28.0, 28.0])
+        
+        # Start positions (Cardinal directions)
+        self.start_positions = [
+            np.array([5.0, 20.0]),  # West
+            np.array([20.0, 5.0]),  # South
+            np.array([35.0, 20.0]), # East
+            np.array([20.0, 35.0])  # North
+        ]
+
+    def setup(self, sim):
+        # 1. Clear Map
+        sim.map_size = 40
+        sim.occupancy_grid.fill(0)
+        sim.occupancy_grid[0, :] = 1
+        sim.occupancy_grid[-1, :] = 1
+        sim.occupancy_grid[:, 0] = 1
+        sim.occupancy_grid[:, -1] = 1
+
+        # 2. Reset Agents
+        sim.predator.pos = np.array([-100.0, -100.0])
+        sim.pheromones = []
+        
+        # 3. Reset Brain (Fresh Subject)
+        sim.brain.astrocyte.glycogen = 1.0
+        sim.brain.astrocyte.neuronal_atp = 1.0
+        sim.frustration = 0.0
+        sim.dopamine = 0.5
+        
+        # Reset Place Cells to ensure we are testing *new* learning
+        if sim.brain.place_cells:
+            sim.brain.place_cells.reset()
+            
+        # Start Trial 1
+        self.start_new_trial(sim)
+        print(f"LAB: Water Maze Started. Target at {self.target_pos}")
+
+    def start_new_trial(self, sim):
+        # Pick random start point
+        start_pos = random.choice(self.start_positions)
+        sim.rat_pos = start_pos.copy()
+        sim.rat_vel = np.array([0.0, 0.0])
+        
+        # Place Target
+        sim.targets = [self.target_pos.copy()]
+        
+        # Reset trial timer
+        self.trial_timer = 0
+        
+        # Boost frustration slightly to motivate "swimming"
+        sim.frustration = 0.2
+
+    def step(self, sim, timer):
+        if self.finished: return None
+
+        self.trial_timer += 1
+        
+        # Check Success
+        dist = np.linalg.norm(sim.rat_pos - self.target_pos)
+        success = dist < 1.5
+        
+        # Check Timeout
+        timeout = self.trial_timer >= self.max_frames_per_trial
+        
+        if success or timeout:
+            result_time = self.trial_timer
+            status = "SUCCESS" if success else "TIMEOUT"
+            print(f"LAB: Trial {self.current_trial} {status} in {result_time} frames.")
+            
+            # --- CRITICAL: THE "NIGHT" PHASE ---
+            # Trigger massive replay to consolidate the path
+            if sim.config.get("enable_replay", 0.0) > 0.5:
+                print("LAB: Consolidating memory (Dreaming)...")
+                # We force 3 cycles of replay to ensure the Place Cells/BG get updated
+                for _ in range(3):
+                    sim.brain.offline_replay_and_consolidate(
+                        steps=20, 
+                        bridge_prob=0.5, 
+                        strength=0.2,
+                        stress_learning_gain=1.0 # High gain because finding the platform is life-or-death
+                    )
+            
+            # Prepare next trial
+            if self.current_trial < self.total_trials:
+                self.current_trial += 1
+                self.start_new_trial(sim)
+            else:
+                self.finished = True
+
+            # Return data point for the graph
+            # We normalize 1500 frames to "height" of graph
+            return {
+                "frame": self.current_trial, # X-axis = Trial Number
+                "latency": result_time,      # Y-axis = Time to find
+                "success": 1 if success else 0
+            }
+            
+        return None # No data point until trial ends
+
+    def is_complete(self, sim, timer):
+        return self.finished
 class ScientificTestBed:
     def __init__(self, simulation):
         self.sim = simulation
@@ -2102,6 +2223,7 @@ class ScientificTestBed:
         self.protocols = {
             "open_field": OpenFieldProtocol,
             "t_maze": TMazeProtocol,
+            "spatial_learning": MorrisWaterMazeProtocol,
         }
 
     def start_experiment(self, protocol_name="open_field"):
