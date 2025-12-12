@@ -4,77 +4,123 @@
 
 ![Quantum Rat Simulation](rat_looks_for_cheese.png)
 
-## Overview
+**Quantum Rat**  
+**A Vertical Slice of Artificial Consciousness**  
+*"The conscious agent is the processor, not the story it generates."*
 
-Most modern AI (like Deep Learning) is Connectionist. It assumes infinite energy, perfect timing, and optimises abstract weights to minimise error via backpropagation.
+Quantum Rat is a departure from standard Connectionist AI. While modern LLMs operate horizontally—finding statistical correlations across massive datasets to simulate a narrative "Rendering Layer"—this project builds intelligence vertically and from the bottom up.
 
-The Quantum Rat is different. It is a Biophysical Emulator. It simulates the physical constraints that real biological brains face: thermodynamics, energy bottlenecks, quantum coherence thresholds, and molecular decay.
+It does not simulate a story. It simulates a nervous system.
 
-This is an experiment in Biomimetic AI—building intelligence from the bottom up, starting with the microtubule and ending with behaviour.
+## Project Philosophy
 
-## Why is this interesting?
+This architecture is the software implementation of the Architect Philosophy. It rejects the illusion of continuous flow in favor of the Quantized Self, modeling intelligence as a series of discrete state transitions rather than a smooth narrative stream.
 
-This simulation creates a "digital organism" that exhibits emergent behaviours we usually only see in real animals, without hard-coding them:
+### Core Axioms
 
-1.  **Flashbulb Memories:** Instead of backpropagation, it uses Synaptic Tagging and Capture (STC). A single high-reward event (finding cheese) floods the system with proteins, instantly locking in the memory of the path taken.
+- **Vertical Slice Architecture:** Instead of a thin layer of language processing, we model the complete stack: Sensory Input → Thalamic Gating → Cortical Processing → Motor Output.
+- **The Frame Rate of Reality:** The system does not operate in continuous time. It operates via Discrete Collapse Events—specific moments where probability becomes actuality.
+- **Data Metabolism:** The agent treats information as caloric energy. High-fidelity input sustains the system; high-entropy noise triggers a Brownout State (functional degradation).
 
-2.  **Cognitive Fatigue:** The rat has a metabolic engine. If it sprints or thinks too hard, its transporters (MCTs) physically cannot shuttle fuel fast enough. It will "bonk" and experience decision paralysis, even if it has energy reserves.
-3.  **The Zombie Effect [EXPERIMENTAL]:** You can administer simulated "Anaesthesia" (Isoflurane). This dampens the quantum dipole oscillations in the simulated microtubules. The rat keeps moving reflexively (zombie mode) but loses the ability to form complex plans or memories.
+## Architecture
 
-## Under the Hood: The Architecture
+### 1. The Substrate (Bottom-Up Construction)
 
-The simulation runs on a custom Python physics backend (NumPy) with a real-time WebGL frontend (Three.js).
+Standard AI starts with top-down goals (e.g., "Write a poem"). Quantum Rat starts with bottom-up constraints (e.g., "Minimize prediction error," "Conserve energy").
 
-### 1. The Quantum Core (Orch OR)
-Instead of standard bits, the decision-making substrate is a cellular automaton running on a cylindrical hexagonal lattice. It emulates the potential quantum dipole interactions of tubulin proteins inside microtubules.
-* **Mechanism:** It evolves via a Schrödinger-like equation. When the system achieves high coherence (Superradiance), it "collapses" to a decision vector.
+- **Inputs:** Raw, unbuffered data streams. No "Rendering Layer" or metaphors.
+- **Processing:** Deterministic projection based on causal logic (State A + Rule B → Outcome C).
+- **Outputs:** Discrete motor/computational actions, not text generation.
 
-### 2. The Metabolic Engine (ANLS)
-Energy isn't just a number; it's a flow. We simulate the Astrocyte-Neuron Lactate Shuttle.
-* **Mechanism:** Calculates ATP production via Michaelis-Menten kinetics. Learning is gated by extracellular lactate levels—a "hungry" brain physically cannot write new memories.
+### 2. The Quantized Loop
 
-### 3. The Searchlight (TRN)
-The Thalamic Reticular Nucleus acts as a hardware-level attention filter.
-* **Mechanism:** Uses Lateral Inhibition to focus attention. If "Fear" (Amygdala) is high, it physically inhibits the "Memory" circuits to focus entirely on visual threats.
+The main loop simulates the binding mechanism of biological consciousness (analogous to Gamma/Theta oscillations).
 
-### 4. Action & Time (PBWM & PVLV)
-Combines Reinforcement Learning with working memory gating.
-* **Mechanism:** The rat learns to predict rewards before they happen (PVLV) and uses Time Cells to understand temporal sequences, not just spatial ones.
+**Core Logic (Simplified from `DendriticCluster.process_votes`):**
 
-## Quick Start
+```python
+def process_votes(self, ...):
+    # 1. Input: Raw data enters the buffer
+    sensory_vec = self.vision_cortex.encode(vision_data)
+    
+    # 2. Collapse: The probabilistic state forces a decision (Microtubule Dynamics)
+    # This simulates the "Frame Rate" of the entity via Schrodinger-like evolution
+    d_soma, collapse_event = self.soma.step(pump_map)
+    
+    # 3. Binding: Neural oscillations gate the flow of information
+    trn_modes = self.trn.step(arousal, ...) 
+    
+    # 4. Action: Basal Ganglia selects action based on Dopamine/Frustration
+    final_vector, gate_signal, dopamine, _ = self.basal_ganglia.select_action_and_gate(
+        sensory_vec, current_memory, frustration, reward_signal, ...
+    )
+    
+    return final_decision
+```
 
-1.  **Clone the repo**
-    ```bash
-    git clone [https://github.com/yourusername/quantum-rat.git](https://github.com/yourusername/quantum-rat.git)
-    cd quantum-rat
-    ```
+### 3. Entropy Management
 
-2.  **Install dependencies**
-    ```bash
-    pip install flask numpy
-    ```
+The system includes an Epistemic Entropy monitor via the Microtubule Simulator.
 
-3.  **Run the brain**
-    ```bash
-    python app.py
-    ```
+- **Good State (Coherence):** Low entropy. Prediction error is minimized. The internal model matches external reality.
+- **Bad State (Incoherence):** High entropy. The model diverges from reality. The agent treats this not as "confusion" but as system damage.
 
-4.  **Open the MRI Scanner**
-    Go to `http://localhost:5000` in your browser.
+### 4. Biological Modules
 
-## Experiments to Try
+The codebase implements specific biological correlates:
 
-Once the simulation is running, manipulate the biophysics to see how behaviour changes:
+- **MicrotubuleSimulator2D:** Simulates quantum collapse and coherence in the cytoskeleton.
+- **Astrocyte:** Manages energy metabolism (Glycogen/ATP) and lactate transport.
+- **TRNGate:** Thalamic Reticular Nucleus gating for attention and arousal.
+- **BasalGanglia (PVLV):** Reinforcement learning and action selection.
+- **HippocampalReplay:** Offline consolidation of memories during "microsleeps".
+- **PlaceCellNetwork:** Spatial navigation and cognitive mapping.
 
-* **The Anaesthesia Test:** Slide "Anaesthesia" to 1.0. Watch the Soma heatmap go dark. The rat will stop solving the maze and start wandering aimlessly.
-* **Turbo Training:** Click "Hyper-Train". Watch the "Genetic Drifts" graph. You will see sudden spikes where the rat makes a discovery and the STC system locks it in.
-* **Starvation:** Let it run in Turbo mode until Glycogen (Purple Bar) drops significantly. Notice how the rat becomes sluggish and stops learning new paths due to the closed metabolic gate.
+## Installation
 
-## Future Roadmap: Robotics
+```bash
+git clone https://github.com/tripptytrip/quantum-rat.git
+cd quantum-rat
+pip install -r requirements.txt
+```
 
-This architecture is lightweight enough to run on edge hardware (Raspberry Pi / Jetson Nano). The next phase is Embodiment: linking the `Glycogen` variable to a physical robot's battery voltage, creating a robot that seeks a charger because it feels "metabolic anxiety."
+*(Note: Ensure numpy and flask are in your requirements.txt based on the imports.)*
 
-## Credits
+## Usage
 
-Concept & Engineering by Michael A Kerr.
-Based on the theories of Penrose/Hameroff (Orch OR), Magistretti (ANLS), and O'Reilly (PBWM).
+Start the simulation server:
+
+```bash
+python app.py
+```
+
+The server runs on `http://localhost:5000`. It provides endpoints for the frontend visualization:
+
+- `GET /`: Main simulation view.
+- `POST /step`: Advances the physics engine by `batch_size` frames.
+- `POST /config`: Runtime adjustment of simulation parameters (speed, determinism, etc.).
+- `POST /reset`: Resets the map and agent.
+
+To run a simulation programmatically:
+
+```python
+import requests
+
+# Advance simulation by 5 frames
+response = requests.post("http://localhost:5000/step", json={"batch_size": 5})
+state = response.json()
+
+print(f"Rat Position: {state['rat']}")
+print(f"Brain State: {state['stats']['status']}")
+```
+
+## 🔭 Roadmap
+
+- Phase 1: The Processor. Implementing the basic FSM (Finite State Machine) with discrete collapse steps. *(Completed)*
+- Phase 2: The Binding. Implementing "Oscillatory" buffers to stitch discrete steps into apparent continuity. *(Completed via TRN/Theta)*
+- Phase 3: The Brownout. Implementing failure modes where low-quality data degrades performance. *(In Progress)*
+
+## 📄 License
+
+MIT
+
