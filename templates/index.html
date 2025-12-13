@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Quantum Rat v3.5: Tabbed UI</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="importmap">
@@ -24,10 +25,6 @@
         
         #pip-label { position: absolute; bottom: 10px; right: 10px; background: rgba(0,0,0,0.7); padding: 2px 5px; font-size: 10px; color: cyan; border: 1px solid #004444; pointer-events: none; z-index: 10; }
         .scanlines { background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.2) 50%, rgba(0,0,0,0.2)); background-size: 100% 4px; pointer-events: none; }
-        /* Scrollbar hiding for cleaner look */
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: #18181b; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
         /* Low-energy feedback on bars only (no screen dim) */
         .flash-critical { animation: flash-critical 0.6s ease-in-out infinite; box-shadow: 0 0 10px rgba(248, 113, 113, 0.7); }
         @keyframes flash-critical { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
@@ -66,7 +63,6 @@
             border-bottom: 2px solid #22d3ee;
             background: rgba(34, 211, 238, 0.1);
         }
-        /* Glassmorphism scrollbar */
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
@@ -566,7 +562,7 @@
 
     // --- MATERIALS ---
     const matWall = new THREE.MeshLambertMaterial({ color: 0x111111, emissive: 0x004444, emissiveIntensity: 0.8 });
-    const matWallWire = new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.1 }); 
+    const matWallWire = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true, transparent: true, opacity: 0.08 });
     const matGround = new THREE.MeshPhongMaterial({ color: 0x080808, shininess: 80 });
     const matRat = new THREE.MeshPhongMaterial({ color: 0x00ffff, emissive: 0x0088ff, emissiveIntensity: 0.5 });
     const matPredator = new THREE.MeshPhongMaterial({ color: 0xff00ff, emissive: 0x550055, emissiveIntensity: 0.8 });
@@ -666,10 +662,10 @@
         });
         wallsInstancedMesh.instanceMatrix.needsUpdate = true;
         scene.add(wallsInstancedMesh);
-        wireframeBox = new THREE.InstancedMesh(edges, matWallWire, walls.length);
+        wireframeBox = new THREE.InstancedMesh(boxGeo, matWallWire, walls.length);
         walls.forEach((w, i) => {
-             dummy.position.set(w[0], 0.5, w[1]); dummy.updateMatrix();
-             wireframeBox.setMatrixAt(i, dummy.matrix);
+            dummy.position.set(w[0], 0.5, w[1]); dummy.updateMatrix();
+            wireframeBox.setMatrixAt(i, dummy.matrix);
         });
         wireframeBox.instanceMatrix.needsUpdate = true;
         scene.add(wireframeBox);
@@ -882,6 +878,7 @@
         try {
             const payload = turboMode ? { batch_size: turboBatch } : {};
             const res = await fetch('/step', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+            if (!res.ok) throw new Error(`/step failed: ${res.status}`);
             const data = await res.json();
 
             const newRatPos = new THREE.Vector3(data.rat[0], 0.5, data.rat[1]);

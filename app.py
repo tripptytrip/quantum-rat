@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import os
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+
 from flask import Flask, render_template, jsonify, request
 import numpy as np
 import json
-import os
 import copy
 import csv
 import random
@@ -3578,4 +3584,4 @@ def determinism_check():
 
 if __name__ == "__main__":
     # For a single-user demo: avoid threading surprises
-    app.run(debug=True, port=5000, threaded=False)
+    app.run(debug=True, port=5000, threaded=False, use_reloader=False)
