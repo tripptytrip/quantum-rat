@@ -28,6 +28,9 @@
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: #18181b; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+        /* Low-energy feedback on bars only (no screen dim) */
+        .flash-critical { animation: flash-critical 0.6s ease-in-out infinite; box-shadow: 0 0 10px rgba(248, 113, 113, 0.7); }
+        @keyframes flash-critical { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
 
         /* Global tooltip */
         #global-tooltip {
@@ -105,6 +108,7 @@
                 <button class="tab-btn active" onclick="setTab('monitor')" id="tab-btn-monitor">Monitor</button>
                 <button class="tab-btn" onclick="setTab('controls')" id="tab-btn-controls">Controls</button>
                 <button class="tab-btn" onclick="setTab('research')" id="tab-btn-research">Research</button>
+                <button class="tab-btn" onclick="setTab('editor')" id="tab-btn-editor">Map Editor</button>
             </div>
 
             <div class="flex-1 overflow-y-auto custom-scrollbar pr-2 relative">
@@ -205,10 +209,10 @@
 
                         <div class="mt-4 border-t border-zinc-800/50 pt-3 space-y-3">
                           <h4 class="text-[10px] text-zinc-500 uppercase tracking-widest">Sensory Pathway</h4>
-                          <div class="flex items-center justify-between"><label class="text-xs text-cyan-300">Sensory Cortex</label><input type="checkbox" id="chk-sensory" class="accent-cyan-500" onchange="updateConfig('enable_sensory_cortex', this.checked ? 1.0 : 0.0)"></div>
-                          <div class="flex items-center justify-between"><label class="text-xs text-green-300">Thalamus Relay</label><input type="checkbox" id="chk-thalamus" class="accent-green-500" onchange="updateConfig('enable_thalamus', this.checked ? 1.0 : 0.0)"></div>
-                          <label class="text-xs text-zinc-400 flex justify-between"><span class="text-yellow-300">Blend (Old ↔ New)</span><span id="blend-val">0.0</span></label>
-                          <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1" min="0" max="1" step="0.05" value="0" oninput="updateConfig('sensory_blend', this.value); document.getElementById('blend-val').innerText = this.value">
+                          <div class="flex items-center justify-between"><label class="text-xs text-cyan-300">Sensory Cortex</label><input type="checkbox" id="chk-sensory" class="accent-cyan-500" checked onchange="updateConfig('enable_sensory_cortex', this.checked ? 1.0 : 0.0)"></div>
+                          <div class="flex items-center justify-between"><label class="text-xs text-green-300">Thalamus Relay</label><input type="checkbox" id="chk-thalamus" class="accent-green-500" checked onchange="updateConfig('enable_thalamus', this.checked ? 1.0 : 0.0)"></div>
+                          <label class="text-xs text-zinc-400 flex justify-between"><span class="text-yellow-300">Blend (Old ↔ New)</span><span id="blend-val">1.0</span></label>
+                          <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1" min="0" max="1" step="0.05" value="1" oninput="updateConfig('sensory_blend', this.value); document.getElementById('blend-val').innerText = this.value">
                         </div>
 
                         <div class="mt-4 border-t border-zinc-800/50 pt-3 space-y-3">
@@ -216,7 +220,7 @@
 
                           <div class="flex items-center justify-between" data-tip="replay_enable">
                             <label class="text-xs text-emerald-300">Enable Replay</label>
-                            <input type="checkbox" id="chk-replay" class="accent-emerald-500"
+                            <input type="checkbox" id="chk-replay" class="accent-emerald-500" checked
                                    onchange="updateConfig('enable_replay', this.checked ? 1.0 : 0.0)">
                           </div>
 
@@ -228,10 +232,10 @@
                                  oninput="updateConfig('replay_strength', this.value); document.getElementById('replay-strength-val').innerText = this.value">
 
                           <label class="text-xs text-zinc-400 flex justify-between" data-tip="replay_steps">
-                            <span class="text-emerald-300">Replay Steps</span><span id="replay-steps-val">6</span>
+                            <span class="text-emerald-300">Replay Steps</span><span id="replay-steps-val">20</span>
                           </label>
                           <input type="range" class="w-full h-1 bg-zinc-700 rounded appearance-none outline-none mt-1"
-                                 min="0" max="20" step="1" value="6"
+                                 min="0" max="20" step="1" value="20"
                                  oninput="updateConfig('replay_steps', this.value); document.getElementById('replay-steps-val').innerText = this.value">
                         </div>
                     </div>
@@ -268,6 +272,35 @@
                             <span class="text-red-400">● Amygdala</span>
                             <span class="text-blue-400">● Striatum</span>
                             <span class="text-green-400">● Hippocampus</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="view-editor" class="hidden flex-col gap-4">
+                    <div class="bg-zinc-900 p-4 rounded border border-zinc-800">
+                        <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest">Map Designer</h3>
+                        <p class="text-xs text-zinc-400 mb-3">Left Click: Add Wall | Right Click: Remove Wall</p>
+                        
+                        <div class="flex justify-center mb-4 border border-zinc-800 bg-black">
+                            <canvas id="editor-canvas" width="320" height="320" class="cursor-crosshair"></canvas>
+                        </div>
+
+                        <div class="flex flex-col gap-3">
+                            <div class="flex gap-2">
+                                <input type="text" id="map-name-input" placeholder="Map Name" class="bg-zinc-800 border border-zinc-700 text-xs text-white p-2 rounded flex-1 focus:border-cyan-500 outline-none">
+                                <button onclick="saveCustomMap()" class="btn text-xs text-cyan-400 border-cyan-900/50 hover:border-cyan-500">Save</button>
+                            </div>
+                            
+                            <div class="h-px bg-zinc-800 my-1"></div>
+                            
+                            <div class="flex gap-2">
+                                <select id="saved-maps-select" class="bg-zinc-800 border border-zinc-700 text-xs text-white p-2 rounded flex-1 outline-none">
+                                    <option value="" disabled selected>Select a map...</option>
+                                </select>
+                                <button onclick="loadCustomMap()" class="btn text-xs text-green-400 border-green-900/50 hover:border-green-500">Load</button>
+                            </div>
+                            
+                            <button onclick="clearEditor()" class="btn text-xs text-zinc-500 border-zinc-800 hover:text-white mt-2">Clear Canvas</button>
                         </div>
                     </div>
                 </div>
@@ -360,23 +393,134 @@
     let turboBatch = 200;   // practical ceiling
     let normalMaxSpeed = 10;
 
+    // --- MAP EDITOR LOGIC ---
+    const EDITOR_SIZE = 40;
+    const cvsEditor = document.getElementById('editor-canvas');
+    const ctxEditor = cvsEditor ? cvsEditor.getContext('2d') : null;
+    let editorGrid = Array(EDITOR_SIZE).fill(null).map(() => Array(EDITOR_SIZE).fill(0));
+    let isDrawing = false;
+    let drawMode = 1; // 1 = wall, 0 = erase
+
+    function clearEditor() {
+        editorGrid = Array(EDITOR_SIZE).fill(null).map(() => Array(EDITOR_SIZE).fill(0));
+        for (let i = 0; i < EDITOR_SIZE; i++) {
+            editorGrid[0][i] = 1;
+            editorGrid[EDITOR_SIZE - 1][i] = 1;
+            editorGrid[i][0] = 1;
+            editorGrid[i][EDITOR_SIZE - 1] = 1;
+        }
+        drawEditor();
+    }
+
+    function drawEditor() {
+        if (!ctxEditor || !cvsEditor) return;
+        const cellSize = cvsEditor.width / EDITOR_SIZE;
+        ctxEditor.fillStyle = '#111';
+        ctxEditor.fillRect(0, 0, cvsEditor.width, cvsEditor.height);
+
+        for (let y = 0; y < EDITOR_SIZE; y++) {
+            for (let x = 0; x < EDITOR_SIZE; x++) {
+                if (editorGrid[y][x] === 1) {
+                    ctxEditor.fillStyle = '#22d3ee';
+                    ctxEditor.fillRect(x * cellSize, y * cellSize, cellSize - 1, cellSize - 1);
+                } else {
+                    ctxEditor.strokeStyle = '#222';
+                    ctxEditor.strokeRect(x * cellSize, y * cellSize, cellSize, cellSize);
+                }
+            }
+        }
+    }
+
+    function handleEdit(e) {
+        if (!cvsEditor) return;
+        const rect = cvsEditor.getBoundingClientRect();
+        const cellSize = cvsEditor.width / EDITOR_SIZE;
+        const x = Math.floor((e.clientX - rect.left) / cellSize);
+        const y = Math.floor((e.clientY - rect.top) / cellSize);
+
+        if (x >= 0 && x < EDITOR_SIZE && y >= 0 && y < EDITOR_SIZE) {
+            if (x === 0 || x === EDITOR_SIZE - 1 || y === 0 || y === EDITOR_SIZE - 1) return;
+            editorGrid[y][x] = drawMode;
+            drawEditor();
+        }
+    }
+
+    if (cvsEditor) {
+        cvsEditor.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            drawMode = (e.button === 2 || e.shiftKey) ? 0 : 1;
+            handleEdit(e);
+        });
+        window.addEventListener('mouseup', () => isDrawing = false);
+        cvsEditor.addEventListener('mousemove', (e) => { if (isDrawing) handleEdit(e); });
+        cvsEditor.addEventListener('contextmenu', e => e.preventDefault());
+    }
+
+    async function refreshMapList() {
+        const sel = document.getElementById('saved-maps-select');
+        if (!sel) return;
+        const res = await fetch('/maps/list');
+        const data = await res.json();
+        sel.innerHTML = '<option value="" disabled selected>Select a map...</option>';
+        (data.maps || []).forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m;
+            opt.innerText = m;
+            sel.appendChild(opt);
+        });
+    }
+
+    window.saveCustomMap = async function() {
+        const name = document.getElementById('map-name-input').value;
+        if (!name) return alert("Please name your map.");
+        await fetch('/maps/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ name: name, grid: editorGrid })
+        });
+        await refreshMapList();
+        alert(`Map '${name}' saved.`);
+    };
+
+    window.loadCustomMap = async function() {
+        const name = document.getElementById('saved-maps-select').value;
+        if (!name) return;
+        
+        const res = await fetch('/maps/load', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ name: name })
+        });
+        const data = await res.json();
+        if (data.walls) {
+            buildWalls(data.walls);
+            clearMemories();
+        }
+    };
+
+    // Initialize editor state at load
+    clearEditor();
+    refreshMapList();
+
     // --- TAB SYSTEM ---
     window.setTab = function(tabName) {
-        // Toggle Buttons
-        ['monitor', 'controls', 'research'].forEach(t => {
+        ['monitor', 'controls', 'research', 'editor'].forEach(t => {
             const btn = document.getElementById(`tab-btn-${t}`);
             const view = document.getElementById(`view-${t}`);
             
             if(t === tabName) {
-                btn.classList.add('active');
-                view.classList.remove('hidden');
-                view.classList.add('flex');
+                btn?.classList.add('active');
+                view?.classList.remove('hidden');
+                view?.classList.add('flex');
             } else {
-                btn.classList.remove('active');
-                view.classList.add('hidden');
-                view.classList.remove('flex');
+                btn?.classList.remove('active');
+                view?.classList.add('hidden');
+                view?.classList.remove('flex');
             }
         });
+        if (tabName === 'editor') {
+            refreshMapList();
+        }
     };
 
     async function setTurboMode(on) {
@@ -861,36 +1005,33 @@
                 document.getElementById('bar-dopa').style.width = (stats.dopamine*100) + '%';
                 
                 document.getElementById('val-energy').innerText = Math.round(stats.energy * 100) + '%';
-                document.getElementById('bar-energy').style.width = (stats.energy * 100) + '%';
+                const energyBar = document.getElementById('bar-energy');
+                energyBar.style.width = (stats.energy * 100) + '%';
                 
                 const atpVal = stats.atp || 0; 
                 const atpPercent = Math.min(100, Math.round(atpVal * 100)); 
                 document.getElementById('val-atp').innerText = atpPercent + '%';
-                document.getElementById('bar-atp').style.width = atpPercent + '%';
+                const atpBar = document.getElementById('bar-atp');
+                atpBar.style.width = atpPercent + '%';
                 
                 // --- UPDATED VISUAL FEEDBACK ---
                 const vignette = document.getElementById('energy-vignette');
                 const threeCont = document.getElementById('three-container');
 
                 if (atpVal < 0.3) {
-                    // 1. Fade in the dark vignette (Tunnel Vision)
-                    vignette.style.opacity = 1;
-                    
-                    // 2. Blur/Desaturate ONLY the 3D view, not the UI
-                    threeCont.style.filter = "grayscale(70%) blur(1px)";
-                    
-                    // Optional: Pulse the ATP bar red
-                    document.getElementById('bar-atp').classList.add('bg-red-500');
-                    document.getElementById('bar-atp').classList.remove('bg-yellow-400');
+                    // Keep the scene clear; flash the bars instead
+                    vignette.style.opacity = 0;
+                    threeCont.style.filter = "none";
+                    energyBar.classList.add('flash-critical');
+                    atpBar.classList.add('flash-critical', 'bg-red-500');
+                    atpBar.classList.remove('bg-yellow-400');
                 } else {
                     vignette.style.opacity = 0;
                     threeCont.style.filter = "none";
-                    
-                    document.getElementById('bar-atp').classList.remove('bg-red-500');
-                    document.getElementById('bar-atp').classList.add('bg-yellow-400');
-                    
-                    // Clean up global filter if it was stuck from previous version
-                    document.body.style.filter = "none";
+                    energyBar.classList.remove('flash-critical');
+                    atpBar.classList.remove('flash-critical', 'bg-red-500');
+                    atpBar.classList.add('bg-yellow-400');
+                    document.body.style.filter = "none"; // cleanup if persisted
                 }
 
                 document.getElementById('val-deaths').innerText = stats.deaths || 0;

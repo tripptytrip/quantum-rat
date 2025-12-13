@@ -18,6 +18,25 @@ app = Flask(__name__)
 # Serialize access to global simulation state (single-user demo safety)
 sim_lock = Lock()
 
+# --- MAP STORAGE HELPERS ---
+CUSTOM_MAPS_FILE = "custom_maps.json"
+
+
+def load_custom_maps_data():
+    if not os.path.exists(CUSTOM_MAPS_FILE):
+        return {}
+    try:
+        with open(CUSTOM_MAPS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_custom_maps_data(data):
+    with open(CUSTOM_MAPS_FILE, "w") as f:
+        json.dump(data, f)
+
+
 # --- PHYSICS ENGINE ---
 COMPLEX_TYPE = np.complex128
 
@@ -3076,6 +3095,74 @@ def config():
             response["warning"] = "Determinism requires a seed value."
 
         return jsonify(response)
+
+
+@app.route("/maps/list", methods=["GET"])
+def list_maps():
+    maps = load_custom_maps_data()
+    return jsonify({"maps": list(maps.keys())})
+
+
+@app.route("/maps/save", methods=["POST"])
+def save_map():
+    req = request.json or {}
+    name = req.get("name")
+    grid = req.get("grid")
+
+    if not name or not grid:
+        return jsonify({"error": "Invalid data"}), 400
+
+    data = load_custom_maps_data()
+    data[name] = grid
+    save_custom_maps_data(data)
+    return jsonify({"status": "saved", "name": name})
+
+
+@app.route("/maps/load", methods=["POST"])
+def load_map():
+    req = request.json or {}
+    name = req.get("name")
+    data = load_custom_maps_data()
+
+    if name not in data:
+        return jsonify({"error": "Map not found"}), 404
+
+    with sim_lock:
+        new_grid = np.array(data[name], dtype=int)
+
+        if new_grid.shape != (sim.map_size, sim.map_size):
+            # For now, assume 40x40; reject unexpected sizes to avoid crashes.
+            return jsonify({"error": "Invalid map size"}), 400
+
+        sim.occupancy_grid = new_grid
+
+        # Safety: Ensure outer walls exist
+        sim.occupancy_grid[0, :] = 1
+        sim.occupancy_grid[-1, :] = 1
+        sim.occupancy_grid[:, 0] = 1
+        sim.occupancy_grid[:, -1] = 1
+
+        # Reset agents to safe positions
+        safe_pos = [3.0, 3.0]
+        empty_spots = np.argwhere(sim.occupancy_grid == 0)
+        if len(empty_spots) > 0:
+            choice = empty_spots[len(empty_spots) // 2]
+            safe_pos = [float(choice[1]) + 0.5, float(choice[0]) + 0.5]
+
+        sim.rat_pos = np.array(safe_pos)
+        sim.rat_vel = np.array([0.0, 0.0])
+        sim.predator.pos = np.array([-100.0, -100.0])
+        sim.pheromones = []
+        if hasattr(sim.brain, "place_cells") and sim.brain.place_cells is not None:
+            sim.brain.place_cells.reset()
+
+        walls = []
+        for y in range(sim.map_size):
+            for x in range(sim.map_size):
+                if sim.occupancy_grid[y, x] == 1:
+                    walls.append([x, y, 1, 1])
+
+        return jsonify({"status": "loaded", "walls": walls, "rat": safe_pos})
 
 
 def brain_fingerprint(sim: SimulationState) -> str:
