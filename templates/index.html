@@ -172,6 +172,30 @@
                             <div class="flex justify-between text-xs mb-1 pt-1"><span class="text-blue-500 font-semibold">DOPAMINE</span><span id="val-dopa" class="text-blue-300">0.20</span></div>
                            <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-dopa" class="h-full bg-gradient-to-r from-blue-600 to-blue-400 w-0 transition-all duration-200"></div></div>
                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1 pt-1"><span class="text-pink-400 font-semibold">SEROTONIN</span><span id="val-ser" class="text-pink-200">0.50</span></div>
+                            <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-ser" class="h-full bg-gradient-to-r from-pink-600 to-pink-400 w-0 transition-all duration-200"></div></div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2 pt-1">
+                            <div>
+                                <div class="flex justify-between text-[11px] mb-1"><span class="text-cyan-400 font-semibold">NE TONIC</span><span id="val-ne-tonic" class="text-cyan-200">0.20</span></div>
+                                <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-ne-tonic" class="h-full bg-gradient-to-r from-cyan-700 to-cyan-400 w-0 transition-all duration-200"></div></div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-[11px] mb-1"><span class="text-cyan-300 font-semibold">NE PHASIC</span><span id="val-ne-phasic" class="text-cyan-100">0.00</span></div>
+                                <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-ne-phasic" class="h-full bg-gradient-to-r from-cyan-500 to-cyan-200 w-0 transition-all duration-200"></div></div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2 pt-1">
+                            <div>
+                                <div class="flex justify-between text-[11px] mb-1"><span class="text-red-400 font-semibold">PANIC</span><span id="val-panic" class="text-red-200">0.00</span></div>
+                                <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-panic" class="h-full bg-gradient-to-r from-red-700 to-red-400 w-0 transition-all duration-200"></div></div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-[11px] mb-1"><span class="text-amber-400 font-semibold">CORTISOL</span><span id="val-cort" class="text-amber-200">0.00</span></div>
+                                <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-cort" class="h-full bg-gradient-to-r from-amber-600 to-amber-300 w-0 transition-all duration-200"></div></div>
+                            </div>
+                        </div>
                         <div class="pt-2 border-t border-zinc-800/50">
                             <div class="flex justify-between text-xs mb-1">
                                 <span class="text-purple-400 font-semibold">GLYCOGEN</span><span id="val-energy" class="text-purple-300">100%</span>
@@ -358,7 +382,7 @@
         },
         "physio": {
             title: "Physiological State",
-            text: "Real-time tracking. High frustration drives exploration. Low ATP triggers 'Brain Fog'—shutting down cortical planning to conserve energy."
+            text: "Tracks frustration, dopamine, serotonin, norepinephrine (tonic/phasic), panic, cortisol, and energy. Use these bars to read arousal, mood, precision, and threat responses in real time."
         },
         "speed": {
             title: "Simulation Speed",
@@ -1046,6 +1070,27 @@
                 const atpBar = document.getElementById('bar-atp');
                 atpBar.style.width = atpPercent + '%';
                 
+                // Serotonin, NE, Panic, Cortisol
+                const serVal = Math.max(0, stats.serotonin || 0);
+                document.getElementById('val-ser').innerText = serVal.toFixed(2);
+                document.getElementById('bar-ser').style.width = (Math.min(serVal, 1.0) * 100) + '%';
+
+                const neTon = Math.max(0, stats.norepinephrine || 0);
+                document.getElementById('val-ne-tonic').innerText = neTon.toFixed(2);
+                document.getElementById('bar-ne-tonic').style.width = (Math.min(neTon, 1.0) * 100) + '%';
+
+                const nePh = Math.max(0, stats.ne_phasic || 0);
+                document.getElementById('val-ne-phasic').innerText = nePh.toFixed(2);
+                document.getElementById('bar-ne-phasic').style.width = (Math.min(nePh, 1.0) * 100) + '%';
+
+                const panicVal = Math.max(0, stats.panic || 0);
+                document.getElementById('val-panic').innerText = panicVal.toFixed(2);
+                document.getElementById('bar-panic').style.width = (Math.min(panicVal, 1.0) * 100) + '%';
+
+                const cortVal = Math.max(0, stats.cortisol || 0);
+                document.getElementById('val-cort').innerText = cortVal.toFixed(2);
+                document.getElementById('bar-cort').style.width = (Math.min(cortVal, 2.0) * 50) + '%'; // cortisol can exceed 1
+
                 // --- ACETYLCHOLINE & UNCERTAINTY ---
                 if (stats.ach_tonic !== undefined) {
                     const achVal = Math.max(0, Math.min(1, stats.ach_tonic));
