@@ -23,6 +23,8 @@ CUSTOM_MAPS_FILE = "custom_maps.json"
 
 
 def load_custom_maps_data():
+    if "sim" in globals() and getattr(sim, "config", {}).get("deterministic", 0.0) > 0.5:
+        return {}
     if not os.path.exists(CUSTOM_MAPS_FILE):
         return {}
     try:
@@ -33,6 +35,8 @@ def load_custom_maps_data():
 
 
 def save_custom_maps_data(data):
+    if "sim" in globals() and getattr(sim, "config", {}).get("deterministic", 0.0) > 0.5:
+        return
     with open(CUSTOM_MAPS_FILE, "w") as f:
         json.dump(data, f)
 
@@ -407,13 +411,18 @@ class PVLV_Learning:
         self.alpha_pv = 0.1
         self.alpha_lv = 0.05
 
-    def step(self, sensory_drive: float, reward_present: float, baseline_dopamine: float = 0.0):
+    def step(self, sensory_drive: float, reward_present: float, baseline_dopamine: float = 0.0, serotonin: float = 0.5):
         sensory_drive = float(max(0.0, sensory_drive))
         reward_present = float(max(0.0, reward_present))
         baseline_dopamine = float(clamp(baseline_dopamine, 0.0, 1.5))
+        serotonin = float(clamp(serotonin, 0.0, 1.0))
+
+        # Low serotonin devalues rewards (impatience); high serotonin preserves value
+        patience_factor = 0.5 + (serotonin * 0.5)
+        discounted_reward = reward_present * patience_factor
 
         pv_prediction = self.w_pv * sensory_drive
-        pv_error = reward_present - pv_prediction
+        pv_error = discounted_reward - pv_prediction
         self.w_pv += self.alpha_pv * pv_error * sensory_drive
 
         lv_prediction = self.w_lv * sensory_drive
@@ -440,33 +449,81 @@ class LocusCoeruleus:
         self.tonic_ne = 0.2
         self.phasic_ne = 0.0
         self.reward_pred = 0.0  # crude expectation tracker
-        self.last = {"arousal_boost": 0.0, "attention_gain": 1.0, "explore_gain": 1.0, "plasticity_gain": 1.0}
+        self.uncertainty = 0.0
+        self.mode = "EXPLOIT"
+        self.last = {
+            "arousal_boost": 0.0,
+            "attention_gain": 1.0,
+            "explore_gain": 1.0,
+            "plasticity_gain": 1.0,
+            "habit_weight": 1.0,
+            "deliberation_weight": 1.0,
+            "wm_stability": 1.0,
+            "attention_breadth": 1.0,
+        }
 
-    def step(self, novelty: float, pain: float, reward: float, danger: float, dt: float = 0.05):
+    def step(self, novelty: float, pain: float, reward: float, danger: float, dt: float = 0.05, surprise: float = 0.0):
         novelty = clamp(float(novelty), 0.0, 1.0)
         pain    = clamp(float(pain), 0.0, 1.0)
         reward  = clamp(float(reward), 0.0, 1.0)
         danger  = clamp(float(danger), 0.0, 1.0)
+        pe_surprise = clamp(float(surprise), 0.0, 1.0)
 
-        surprise = abs(reward - self.reward_pred)
+        # --- 1. Uncertainty from prediction error (slow EMA of surprise) ---
+        reward_surprise = abs(reward - self.reward_pred)
         self.reward_pred = ema(self.reward_pred, reward, tau=0.25, dt=dt)
+        unc_input = max(reward_surprise, pe_surprise)
+        self.uncertainty = ema(self.uncertainty, unc_input, tau=2.0, dt=dt)
 
-        salience = max(novelty, pain, danger, surprise)
-
-        target_tonic = clamp(0.15 + 0.55 * novelty + 0.45 * danger + 0.25 * pain, 0.0, 1.0)
+        # --- 2. Phasic NE: fast salience bursts ---
+        salience = max(novelty, pain, danger, reward_surprise, pe_surprise)
         self.phasic_ne = clamp(ema(self.phasic_ne, salience, tau=0.10, dt=dt), 0.0, 1.0)
+
+        # --- 3. Tonic NE: uncertainty + environment ---
+        target_tonic = 0.15 + (0.6 * self.uncertainty)
+        target_tonic += 0.3 * novelty
+        target_tonic += 0.25 * danger
+        target_tonic += 0.15 * pain
+        target_tonic = clamp(target_tonic, 0.0, 1.0)
         self.tonic_ne = clamp(ema(self.tonic_ne, target_tonic, tau=1.50, dt=dt), 0.0, 1.0)
 
-        arousal_boost   = 0.6 * self.tonic_ne + 1.0 * self.phasic_ne
-        attention_gain  = clamp(0.7 + 0.7 * self.tonic_ne + 0.4 * self.phasic_ne, 0.5, 2.0)
-        explore_gain    = clamp(0.6 + 1.8 * self.tonic_ne, 0.2, 3.0)
-        plasticity_gain = clamp(0.8 + 1.0 * self.phasic_ne, 0.5, 2.0)
+        # --- 4. Mode classification ---
+        if self.tonic_ne < 0.35:
+            self.mode = "EXPLOIT"
+        elif self.tonic_ne < 0.65:
+            self.mode = "BALANCED"
+        else:
+            self.mode = "EXPLORE"
+
+        # --- 5. Outputs ---
+        habit_weight = clamp(1.2 - (self.tonic_ne * 1.0), 0.2, 1.2)
+        deliberation_weight = clamp(0.5 + (self.tonic_ne * 1.0), 0.5, 1.5)
+
+        if self.phasic_ne < 0.5:
+            wm_stability = 1.0
+        else:
+            wm_stability = clamp(1.0 - (self.phasic_ne - 0.5) * 1.4, 0.3, 1.0)
+
+        optimal_ne = 0.5
+        distance_from_optimal = abs(self.tonic_ne - optimal_ne)
+        attention_gain = clamp(1.5 - (distance_from_optimal * 1.0), 0.7, 1.5)
+        attention_gain += self.phasic_ne * 0.4
+        attention_gain = clamp(attention_gain, 0.5, 2.0)
+
+        attention_breadth = clamp(0.3 + (self.tonic_ne * 1.2), 0.3, 1.5)
+        explore_gain = clamp(0.6 + (self.tonic_ne * 1.8), 0.2, 3.0)
+        plasticity_gain = clamp(0.8 + (self.phasic_ne * 1.0), 0.5, 2.0)
+        arousal_boost = (0.6 * self.tonic_ne) + (1.0 * self.phasic_ne)
 
         self.last = {
             "arousal_boost": float(arousal_boost),
             "attention_gain": float(attention_gain),
             "explore_gain": float(explore_gain),
             "plasticity_gain": float(plasticity_gain),
+            "habit_weight": float(habit_weight),
+            "deliberation_weight": float(deliberation_weight),
+            "wm_stability": float(wm_stability),
+            "attention_breadth": float(attention_breadth),
         }
         return self.last
 
@@ -548,7 +605,8 @@ class Thalamus:
               relay_gain: float = 1.0,
               noise_level: float = 0.0,
               rng=None,
-              atp_level: float = 1.0  # <--- NEW PARAMETER
+              atp_level: float = 1.0,  # <--- NEW PARAMETER
+              attention_breadth: float = 1.0,
               ) -> Dict[str, Any]:
 
         # --- SEARCHLIGHT / ATTENTION BIAS ---
@@ -576,7 +634,9 @@ class Thalamus:
         # 4. Noise Inhibition (Gating Distractions)
         # A focused mind suppresses Entropy. A tired mind lets it in.
         # If effective_focus is 1.0, we block 90% of the noise.
-        noise_suppression = effective_focus * 0.9
+        base_suppression = effective_focus * 0.9
+        breadth_factor = clamp(2.0 - attention_breadth, 0.5, 1.0)
+        noise_suppression = base_suppression * breadth_factor
         effective_noise = noise_level * (1.0 - noise_suppression)
 
         # Apply the (potentially suppressed) noise
@@ -594,6 +654,71 @@ class Thalamus:
             "relay_features": relay_features,
             "touch": som.get("touch", 0.0),
             "pain": som.get("pain", 0.0)
+        }
+
+
+class PredictiveProcessing:
+    """
+    Minimal predictive processing loop:
+      z_{t-1} -> yhat_t
+      PE_t = y_t - yhat_t
+      update W using PE_t ⊗ z_{t-1}
+      then compute yhat_{t+1} from z_t
+    """
+    def __init__(self, rng, state_dim: int, obs_dim: int = 6):
+        self.rng = rng
+        self.state_dim = int(state_dim)
+        self.obs_dim = int(obs_dim)
+
+        self.W = self.rng.normal(0.0, 0.05, size=(self.obs_dim, self.state_dim))
+        self.b = np.zeros(self.obs_dim, dtype=float)
+
+        self.last_z = None
+        self.last_yhat = None
+        self.pe_ema = 0.0
+
+    def reset(self):
+        self.last_z = None
+        self.last_yhat = None
+        self.pe_ema = 0.0
+
+    def _squash01(self, x: np.ndarray) -> np.ndarray:
+        return 1.0 / (1.0 + np.exp(-x))
+
+    def predict_from(self, z: np.ndarray) -> np.ndarray:
+        z = np.asarray(z, dtype=float)
+        yhat = self._squash01(self.W @ z + self.b)
+        return yhat
+
+    def step(self, z_t: np.ndarray, y_t: np.ndarray, lr: float, weight_decay: float, dt: float, pe_tau: float):
+        z_t = np.asarray(z_t, dtype=float)
+        y_t = np.asarray(y_t, dtype=float)
+
+        pe_vec = None
+        pe_scalar = 0.0
+
+        if self.last_z is not None:
+            yhat_t = self.predict_from(self.last_z)
+            pe_vec = (y_t - yhat_t)
+            pe_scalar = float(np.mean(np.abs(pe_vec)))
+
+            # Sigmoid derivative for stable local learning
+            d = yhat_t * (1.0 - yhat_t)
+            self.W += lr * np.outer(pe_vec * d, self.last_z)
+            self.b += lr * (pe_vec * d)
+            self.W *= (1.0 - weight_decay * dt)
+
+            self.pe_ema = ema(self.pe_ema, pe_scalar, pe_tau, dt)
+
+        yhat_next = self.predict_from(z_t)
+        self.last_z = z_t
+        self.last_yhat = yhat_next
+
+        return {
+            "pe_scalar": pe_scalar,
+            "pe_ema": float(self.pe_ema),
+            "pe_vec": pe_vec,
+            "yhat_next": yhat_next,
         }
 
 
@@ -637,9 +762,16 @@ class BasalGanglia:
         mt_mod_gate: float = 0.2,
         exploration_bias: float = 0.0,  # <--- NEW PARAMETER (Curiosity)
         baseline_dopamine: float = 0.0,
+        serotonin: float = 0.5,
+        lc_habit_weight: float = 1.0,
     ):
         sensory_mag = float(np.linalg.norm(sensory_vec))
-        dopamine_total, dopamine_phasic = self.pvlv.step(sensory_mag, reward, baseline_dopamine=baseline_dopamine)
+        dopamine_total, dopamine_phasic = self.pvlv.step(
+            sensory_mag,
+            reward,
+            baseline_dopamine=baseline_dopamine,
+            serotonin=serotonin,
+        )
 
         # Apply the manual slider gain to the memory vector
         effective_memory = memory_vec * memory_gain 
@@ -655,8 +787,13 @@ class BasalGanglia:
 
         gate_signal = 1.0 if gate_activation > thr else -1.0
 
-        w_sensory = self.w_motor[0] * (1.0 + dopamine_total)
-        w_memory = self.w_motor[1] * (1.0 - dopamine_total)
+        serotonin_clamped = clamp(float(serotonin), 0.0, 1.0)
+        sensory_bias = 1.0 - serotonin_clamped * 0.3
+        memory_bias = 0.5 + serotonin_clamped * 0.5
+        compulsivity = 1.0 + (1.0 - serotonin_clamped) * 0.8
+
+        w_sensory = self.w_motor[0] * (1.0 + dopamine_total) * sensory_bias * lc_habit_weight * compulsivity
+        w_memory = self.w_motor[1] * (1.0 - dopamine_total) * memory_bias * lc_habit_weight * compulsivity
         
         # Use effective_memory here
         motor_out = (sensory_vec * w_sensory) + (effective_memory * w_memory)
@@ -901,6 +1038,11 @@ class DendriticCluster:
         self.mt_readout_soma = 0.0 # New
         self.mt_readout_theta = 0.0 # New
 
+        # Predictive Processing (PP)
+        self.pp_state_dim = 12
+        self.pp = PredictiveProcessing(rng=self.rng, state_dim=self.pp_state_dim, obs_dim=6)
+        self.last_pp = {"pe_norm": 0.0, "pe_ema": 0.0, "yhat_next": np.zeros(6)}
+
         # STC variables
         self.synaptic_tags = np.zeros(3)
         self.prp_level = 0.0
@@ -968,6 +1110,8 @@ class DendriticCluster:
         return (W1 + W2 + W3 + 3) / 6.0
 
     def load_latest_memory(self):
+        if "sim" in globals() and getattr(sim, "config", {}).get("deterministic", 0.0) > 0.5:
+            return
         if os.path.exists("evolution_log.csv"):
             try:
                 with open("evolution_log.csv", "r") as f:
@@ -981,6 +1125,8 @@ class DendriticCluster:
                 pass
 
     def save_memory(self):
+        if "sim" in globals() and getattr(sim, "config", {}).get("deterministic", 0.0) > 0.5:
+            return
         with open("brain_genome.json", "w") as f:
             json.dump(self.weights, f)
 
@@ -1121,6 +1267,7 @@ class DendriticCluster:
         config: Dict[str, Any] = None,
         map_size: int = 40,
         predator_pos=None,
+        serotonin: float = 0.5,
     ):
         if config is None:
             config = {}
@@ -1212,11 +1359,15 @@ class DendriticCluster:
         if precomputed_lc_out is not None:
             lc_out = precomputed_lc_out
         else:
+            surprise = 0.0
+            if config.get("enable_predictive_processing", 0.0) > 0.5:
+                surprise = float(self.last_pp.get("pe_norm", 0.0)) * float(config.get("pp_surprise_gain", 1.0))
             lc_out = self.lc.step(
                 novelty=novelty,
                 pain=pain,
                 reward=float(1.0 if reward_signal > 0 else 0.0),
                 danger=float(danger_level),
+                surprise=surprise,
                 dt=dt,
             )
 
@@ -1270,11 +1421,25 @@ class DendriticCluster:
                     noise_level=thalamic_noise,
                     rng=self.rng,
                     # NEW ARG:
-                    atp_level=self.astrocyte.neuronal_atp 
+                    atp_level=self.astrocyte.neuronal_atp,
+                    attention_breadth=lc_out.get("attention_breadth", 1.0),
                 )
                 sensory_vec_new_gated = thalamus_out["relay_vec"]
             else:
                 sensory_vec_new_gated = sensory_vec_new_raw * gain_sensory
+
+        # Observation vector for predictive processing: [features(4), pain, touch]
+        obs_feat = np.zeros(4, dtype=float)
+        obs_pain = float(pain)
+        obs_touch = float(touch)
+        if enable_sensory_cortex:
+            if enable_thalamus and "relay_features" in thalamus_out:
+                obs_feat = np.array(thalamus_out.get("relay_features", obs_feat), dtype=float)
+                obs_pain = float(thalamus_out.get("pain", obs_pain))
+                obs_touch = float(thalamus_out.get("touch", obs_touch))
+            elif vis_data is not None:
+                obs_feat = np.array(vis_data.get("features", obs_feat), dtype=float)
+        y_t = np.clip(np.concatenate([obs_feat, [obs_pain, obs_touch]]), 0.0, 1.0)
 
         # 3. Blend the two gated vectors
         k = clamp(float(sensory_blend), 0.0, 1.0)
@@ -1317,7 +1482,9 @@ class DendriticCluster:
             if place_nav_mag > 0:
                 place_nav_vec = place_nav_vec / place_nav_mag  # keep navigation direction unit-length
 
-            gain = float(config.get("place_nav_gain", 1.0))
+            base_gain = float(config.get("place_nav_gain", 1.0))
+            lc_delib_boost = float(lc_out.get("deliberation_weight", 1.0)) if lc_out else 1.0
+            gain = base_gain * lc_delib_boost
             sensory_vec = sensory_vec + (gain * place_nav_vec * gain_sensory)
 
             # Soft clamp magnitude to preserve LC/TRN gating meaning
@@ -1329,8 +1496,48 @@ class DendriticCluster:
             place_metrics["place_act_max"] = float(np.max(place_acts))
             place_metrics["place_goal_strength"] = float(np.mean(np.abs(self.place_cells.goal_vec_w)))
 
-        # Apply the metabolic limit to working memory
-        current_memory = self.pfc.memory * gain_memory * cortical_gain
+        # Apply the metabolic limit to working memory and LC stability (phasic NE wipes WM)
+        wm_stability = float(lc_out.get("wm_stability", 1.0)) if lc_out else 1.0
+        current_memory = self.pfc.memory * gain_memory * cortical_gain * wm_stability
+
+        # --- PREDICTIVE PROCESSING UPDATE ---
+        if config.get("enable_predictive_processing", 0.0) > 0.5:
+            hd_sin = float(np.sin(head_direction))
+            hd_cos = float(np.cos(head_direction))
+            theta_entropy = float(theta_r_prev.get("entropy", 0.0))
+            theta_coh = float(theta_r_prev.get("coherence", 1.0))
+            z_t = np.array([
+                float(current_memory[0]), float(current_memory[1]),
+                float(rat_vel[0]), float(rat_vel[1]),
+                hd_sin, hd_cos,
+                float(frustration),
+                float(1.0 if reward_signal > 0 else 0.0),
+                float(danger_level),
+                float(panic),
+                theta_entropy,
+                theta_coh,
+            ], dtype=float)
+
+            lr = float(config.get("pp_lr", 0.02))
+            wd = float(config.get("pp_weight_decay", 0.0005))
+            pe_tau = float(config.get("pp_error_tau", 0.4))
+            plasticity_gain = float(lc_out.get("plasticity_gain", 1.0)) if lc_out else 1.0
+            lr_eff = lr * plasticity_gain * atp_availability
+
+            pp_out = self.pp.step(z_t=z_t, y_t=y_t, lr=lr_eff, weight_decay=wd, dt=dt, pe_tau=pe_tau)
+            pe_norm = clamp(pp_out["pe_ema"] * float(config.get("pp_error_scale", 1.5)), 0.0, 1.0)
+            self.last_pp = {
+                "pe_norm": float(pe_norm),
+                "pe_ema": float(pp_out["pe_ema"]),
+                "yhat_next": np.array(pp_out["yhat_next"], dtype=float),
+            }
+        else:
+            self.last_pp["pe_norm"] = 0.0
+
+        if config.get("enable_predictive_processing", 0.0) > 0.5:
+            bg_exploration = clamp(bg_exploration + self.last_pp["pe_norm"] * float(config.get("pp_explore_gain", 0.5)), 0.0, 1.0)
+        else:
+            self.last_pp["pe_norm"] = 0.0
 
         plasticity_mod = (ext_lactate / 0.5) * (0.5 + 0.5 * w_str)
         plasticity_mod *= lc_out["plasticity_gain"]
@@ -1360,6 +1567,8 @@ class DendriticCluster:
             # NEW ARG:
             exploration_bias=bg_exploration,
             baseline_dopamine=dopamine_tonic,
+            serotonin=serotonin,
+            lc_habit_weight=lc_out.get("habit_weight", 1.0),
         )
         
         # ... rest of the function remains the same ...
@@ -1367,7 +1576,12 @@ class DendriticCluster:
         consolidation_vector = self.update_stc(activity_proxy, reward_signal)
 
         if float(np.max(consolidation_vector)) > 0.1:
-            self.basal_ganglia.w_gate += 0.001 * consolidation_vector * internal_dopamine_total
+            if internal_dopamine_total < 0:
+                punishment_sensitivity = 1.0 + (1.0 - clamp(float(serotonin), 0.0, 1.0)) * 0.5
+                effective_dopamine = internal_dopamine_total * punishment_sensitivity
+            else:
+                effective_dopamine = internal_dopamine_total
+            self.basal_ganglia.w_gate += 0.001 * consolidation_vector * effective_dopamine
 
         self.pfc.update(sensory_vec, gate_signal)
 
@@ -1577,6 +1791,14 @@ class SimulationState:
             "mt_mod_explore": 0.3,            # 0..2 exploration noise multiplier strength
             "mt_mod_gate": 0.2,               # 0..2 gate threshold modulation
             "mt_readout_tau": 0.5,            # smoothing for readouts
+            # --- PREDICTIVE PROCESSING ---
+            "enable_predictive_processing": 1.0,
+            "pp_lr": 0.02,
+            "pp_weight_decay": 0.0005,
+            "pp_error_tau": 0.4,
+            "pp_surprise_gain": 1.0,
+            "pp_explore_gain": 0.5,
+            "pp_error_scale": 1.5,
         }
         self.apply_runtime_config()
 
@@ -1599,17 +1821,18 @@ class SimulationState:
 
         self.lab = ScientificTestBed(self)
 
-        if not os.path.exists("evolution_log.csv"):
-            with open("evolution_log.csv", "w") as f:
-                f.write("Generation,Fitness,Amygdala,Striatum,Hippocampus\n")
-        else:
-            try:
-                with open("evolution_log.csv", "r") as f:
-                    lines = f.readlines()
-                    if len(lines) > 1:
-                        self.generation = int(lines[-1].split(",")[0]) + 1
-            except Exception:
-                pass
+        if not (float(self.config.get("deterministic", 0.0)) > 0.5):
+            if not os.path.exists("evolution_log.csv"):
+                with open("evolution_log.csv", "w") as f:
+                    f.write("Generation,Fitness,Amygdala,Striatum,Hippocampus\n")
+            else:
+                try:
+                    with open("evolution_log.csv", "r") as f:
+                        lines = f.readlines()
+                        if len(lines) > 1:
+                            self.generation = int(lines[-1].split(",")[0]) + 1
+                except Exception:
+                    pass
 
         self.occupancy_grid = np.zeros((self.map_size, self.map_size), dtype=int)
         self.generate_map()
@@ -1690,6 +1913,9 @@ class SimulationState:
             self.brain.mt_rng = self.rng_microtub
         if hasattr(self.brain, "py_rng"):
             self.brain.py_rng = self.py_rng
+        if hasattr(self.brain, "pp") and self.brain.pp is not None:
+            self.brain.pp.reset()
+            self.brain.last_pp = {"pe_norm": 0.0, "pe_ema": 0.0, "yhat_next": np.zeros(6)}
         
         if self.config.get("enable_place_cells", 0.0) > 0.5:
             if self.brain.place_cells is None or \
@@ -1908,7 +2134,8 @@ class SimulationState:
             if avg_fitness > self.best_fitness:
                 self.best_fitness = avg_fitness
                 self.stable_genome = copy.deepcopy(self.genes_being_tested)
-                self.brain.save_memory()
+                if not (float(self.config.get("deterministic", 0.0)) > 0.5):
+                    self.brain.save_memory()
                 print(">>> NEW BEST GENOME SAVED <<<")
 
             self.brain.weights = copy.deepcopy(self.stable_genome)
@@ -2066,7 +2293,7 @@ class TMazeProtocol(LabProtocol):
         sim.occupancy_grid[2:6, 18:23] = 0
 
         # 3. Randomize Forced Arm
-        self.forced_arm = "left" if random.random() < 0.5 else "right"
+        self.forced_arm = "left" if sim.py_rng.random() < 0.5 else "right"
         target_pos = self.left_arm if self.forced_arm == "left" else self.right_arm
         
         # 4. Block the OTHER arm (The one we aren't forcing)
@@ -2228,7 +2455,7 @@ class MorrisWaterMazeProtocol(LabProtocol):
 
     def start_new_trial(self, sim):
         # Pick random start point
-        start_pos = random.choice(self.start_positions)
+        start_pos = self.start_positions[sim.py_rng.randrange(len(self.start_positions))]
         sim.rat_pos = start_pos.copy()
         sim.rat_vel = np.array([0.0, 0.0])
         
@@ -2509,11 +2736,6 @@ def step():
                     }
                 )
 
-            if sim.frustration < 0.1:
-                tau_ser = 10.0
-                alpha_ser = 1.0 - np.exp(-dt / tau_ser)
-                sim.serotonin = min(1.0, sim.serotonin + alpha_ser * (1.0 - sim.serotonin))
-
             # Head direction update needs to happen before TRN modes are checked
             new_heading = float(np.arctan2(sim.rat_vel[1], sim.rat_vel[0]))
             angular_velocity = new_heading - sim.rat_heading
@@ -2585,11 +2807,29 @@ def step():
                     break
 
             # Precompute LC output
+            novelty_for_lc = 0.0
+            enable_sensory_cortex = float(sim.config.get("enable_sensory_cortex", 0.0)) > 0.5
+            # Estimate novelty from vision buffer (targets closer = higher salience)
+            current_salience = 0.0
+            for ray in sim.vision_buffer:
+                if ray.get("type") == 3:  # Target
+                    current_salience = max(current_salience, 1.0 / (ray.get("dist", 0.0) + 1.0))
+            if not hasattr(sim, "prev_salience_for_lc"):
+                sim.prev_salience_for_lc = 0.0
+            novelty_for_lc = abs(current_salience - sim.prev_salience_for_lc)
+            sim.prev_salience_for_lc = 0.9 * sim.prev_salience_for_lc + 0.1 * current_salience
+            novelty_for_lc = clamp(novelty_for_lc, 0.0, 1.0)
+
+            surprise_for_lc = 0.0
+            if float(sim.config.get("enable_predictive_processing", 0.0)) > 0.5:
+                surprise_for_lc = float(sim.brain.last_pp.get("pe_norm", 0.0)) * float(sim.config.get("pp_surprise_gain", 1.0))
+
             lc_out = sim.brain.lc.step(
-                novelty=0.0,  # Simplified for now
+                novelty=novelty_for_lc,
                 pain=pain_now,
                 reward=reward_signal,
                 danger=float(danger_level),
+                surprise=surprise_for_lc,
                 dt=dt,
             )
             
@@ -2598,7 +2838,8 @@ def step():
             if current_atp < 0.2:
                 arousal = 0.0
 
-            amygdala_drive = float(danger_level) * w_amyg * fear_gain
+            safety_bias = 0.5 + (sim.serotonin * 1.0)
+            amygdala_drive = float(danger_level) * w_amyg * fear_gain * safety_bias
             amygdala_drive *= (1.0 + 0.2 * panic_signal)
             pfc_drive = float(sim.frustration) * w_hip
 
@@ -2621,6 +2862,8 @@ def step():
                                 target_pos = t
 
                     # UPDATE UNPACKING: Add internal dopamine (total + phasic) at the end
+                    cfg_ms = dict(sim.config)
+                    cfg_ms["enable_predictive_processing"] = 0.0
                     soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine, internal_dopamine_phasic = sim.brain.process_votes(
                         sim.frustration,
                         sim.dopamine_tonic,
@@ -2645,9 +2888,10 @@ def step():
                         pfc_drive=pfc_drive,
                         precomputed_lc_out=lc_out,
                         target_pos=target_pos,
-                        config=sim.config,
+                        config=cfg_ms,
                         map_size=sim.map_size,
                         predator_pos=sim.predator.pos,
+                        serotonin=sim.serotonin,
                     )
                     # Update dopamine state even during microsleep
                     # --- VISUALIZE INTERNAL DOPAMINE ---
@@ -2692,6 +2936,9 @@ def step():
                                 "dopamine_tonic": sim.dopamine_tonic,
                                 "dopamine_phasic": sim.dopamine_phasic,
                                 "serotonin": sim.serotonin,
+                                "serotonin_patience": 0.5 + (sim.serotonin * 0.5),
+                                "serotonin_safety": 0.5 + (sim.serotonin * 1.0),
+                                "serotonin_compulsivity": 1.0 + (1.0 - sim.serotonin) * 0.8,
                                 "norepinephrine": float(sim.brain.lc.tonic_ne),
                                 "ne_phasic": float(sim.brain.lc.phasic_ne),
                                 "panic": float(panic_signal),
@@ -2708,6 +2955,18 @@ def step():
                                 "mt_soma_readouts": soma_r,
                                 "mt_plasticity_mult": mt_plasticity_mult,
                                 "mt_gate_thr": mt_gate_thr,
+                                "ne_uncertainty": float(sim.brain.lc.uncertainty),
+                                "ne_mode": sim.brain.lc.mode,
+                                "ne_habit_weight": float(sim.brain.lc.last.get("habit_weight", 1.0)),
+                                "ne_wm_stability": float(sim.brain.lc.last.get("wm_stability", 1.0)),
+                                "serotonin_patience": 0.5 + (sim.serotonin * 0.5),
+                                "serotonin_safety": 0.5 + (sim.serotonin * 1.0),
+                                "serotonin_compulsivity": 1.0 + (1.0 - sim.serotonin) * 0.8,
+                                "pp": {
+                                    "pe_norm": float(sim.brain.last_pp.get("pe_norm", 0.0)),
+                                    "pe_ema": float(sim.brain.last_pp.get("pe_ema", 0.0)),
+                                    "yhat_next": sim.brain.last_pp.get("yhat_next", np.zeros(6)).tolist(),
+                                },
                             },
                             "phantom": sim.phantom_trace,
                             "pheromones": sim.pheromones,
@@ -2801,6 +3060,7 @@ def step():
                 config=sim.config,
                 map_size=sim.map_size,
                 predator_pos=sim.predator.pos,
+                serotonin=sim.serotonin,
             )
             sim.last_touch = touch # Update for next step
 
@@ -2829,7 +3089,8 @@ def step():
             explore_gain = float(getattr(sim.brain, "lc", None).last.get("explore_gain", 1.0)) if hasattr(sim.brain, "lc") else 1.0
             if sim.config.get("mt_causal", 0.0) > 0.5:
                 explore_gain *= (1.0 + sim.brain.mt_readout_theta * sim.config.get("mt_mod_explore", 0.3))
-            tremor = sim.rng_noise.normal(0.0, 1.0, size=2) * 0.02 * explore_gain
+            impulsivity_factor = 1.0 + (1.0 - sim.serotonin) * 0.5
+            tremor = sim.rng_noise.normal(0.0, 1.0, size=2) * 0.02 * explore_gain * impulsivity_factor
             sim.rat_vel += tremor
 
             s = float(np.linalg.norm(sim.rat_vel))
@@ -2876,31 +3137,63 @@ def step():
             sim.dopamine_tonic -= stress_depletion
         sim.dopamine_tonic = clamp(sim.dopamine_tonic, -0.3, 0.5)
 
+        # --- SEROTONIN DYNAMICS ---
+        # Chronic stress (cortisol) depletes serotonin; calm periods allow slow recovery.
+        if sim.cortisol > 0.5:
+            depletion_rate = 0.002 * (sim.cortisol - 0.5)
+            sim.serotonin -= depletion_rate * dt_scale
+
+        acute_stressors = sim.frustration + (pain * 0.5)
+        if acute_stressors > 0.1:
+            acute_depletion = 0.001 * acute_stressors
+            sim.serotonin -= acute_depletion * dt_scale
+
+        if sim.frustration < 0.1 and sim.cortisol < 0.3:
+            recovery_target = 0.8
+            recovery_rate = 0.0005
+            sim.serotonin += (recovery_target - sim.serotonin) * recovery_rate * dt_scale
+
+        if reward_signal > 0:
+            sim.serotonin = min(1.0, sim.serotonin + 0.02)
+
+        sim.serotonin = clamp(sim.serotonin, 0.0, 1.0)
+
         if sim.last_collision:
-            sim.frustration = min(1.0, sim.frustration + 0.1)
-            sim.serotonin = max(0.1, sim.serotonin - 0.1)
+            frustration_sensitivity = 1.0 + (1.0 - sim.serotonin) * 1.5
+            frustration_gain = 0.1 * frustration_sensitivity
+            sim.frustration = min(1.0, sim.frustration + frustration_gain)
         else:
-            sim.frustration = max(0.0, sim.frustration - 0.005)
+            decay_rate = 0.005 * (0.5 + 0.5 * sim.serotonin)
+            sim.frustration = max(0.0, sim.frustration - decay_rate * dt_scale)
 
-            # Pain increases frustration
-            sim.frustration = min(1.0, sim.frustration + pain * 0.05)
+        # Pain increases frustration
+        if pain > 0:
+            pain_sensitivity = 1.0 + (1.0 - sim.serotonin) * 0.5
+            sim.frustration = min(1.0, sim.frustration + pain * 0.05 * pain_sensitivity)
 
-            sim.rat_pos = finite_or_zero(sim.rat_pos)
-            sim.rat_vel = finite_or_zero(sim.rat_vel)
+        # --- SEROTONIN GIVE-UP THRESHOLD ---
+        if sim.frustration > 0.7:
+            give_up_prob = (1.0 - sim.serotonin) * 0.3
+            if sim.rng_noise.random() < give_up_prob:
+                sim.dopamine_tonic = max(-0.3, sim.dopamine_tonic - 0.1)
+                sim.frustration = max(0.5, sim.frustration - 0.2)
 
-            sim.cerebellum.update(sim.rat_pos)
+        sim.rat_pos = finite_or_zero(sim.rat_pos)
+        sim.rat_vel = finite_or_zero(sim.rat_vel)
 
-            # Only hunt if we aren't doing a science experiment, unless the protocol is survival
-            allow_hunt = (not sim.lab.active) or (sim.lab.active and isinstance(sim.lab.protocol, SurvivalProtocol))
-            if allow_hunt:
-                sim.predator.hunt(sim.rat_pos, sim.rat_vel, sim.occupancy_grid, sim.map_size, dt_scale=dt_scale)
+        sim.cerebellum.update(sim.rat_pos)
 
-            base_p = 0.2
-            p_drop = 1.0 - (1.0 - base_p) ** dt_scale
-            if sim.rng_noise.random() < p_drop:
-                sim.pheromones.append(sim.rat_pos.tolist())
-                if len(sim.pheromones) > 1000:
-                    sim.pheromones.pop(0)
+        # Only hunt if we aren't doing a science experiment, unless the protocol is survival
+        allow_hunt = (not sim.lab.active) or (sim.lab.active and isinstance(sim.lab.protocol, SurvivalProtocol))
+        if allow_hunt:
+            sim.predator.hunt(sim.rat_pos, sim.rat_vel, sim.occupancy_grid, sim.map_size, dt_scale=dt_scale)
+
+        base_p = 0.2
+        p_drop = 1.0 - (1.0 - base_p) ** dt_scale
+        if sim.rng_noise.random() < p_drop:
+            sim.pheromones.append(sim.rat_pos.tolist())
+            if len(sim.pheromones) > 1000:
+                sim.pheromones.pop(0)
 
         current_walls = None
         if sim.lab.active:
@@ -2930,6 +3223,9 @@ def step():
                     "dopamine_tonic": sim.dopamine_tonic,
                     "dopamine_phasic": sim.dopamine_phasic,
                     "serotonin": sim.serotonin,
+                    "serotonin_patience": 0.5 + (sim.serotonin * 0.5),
+                    "serotonin_safety": 0.5 + (sim.serotonin * 1.0),
+                    "serotonin_compulsivity": 1.0 + (1.0 - sim.serotonin) * 0.8,
                     "norepinephrine": float(sim.brain.lc.tonic_ne),
                     "ne_phasic": float(sim.brain.lc.phasic_ne),
                     "panic": float(panic_signal),
@@ -2939,6 +3235,15 @@ def step():
                     "atp": float(atp_level),
                     "deaths": sim.deaths,
                     "generation": sim.generation,
+                    "ne_uncertainty": float(sim.brain.lc.uncertainty),
+                    "ne_mode": sim.brain.lc.mode,
+                    "ne_habit_weight": float(sim.brain.lc.last.get("habit_weight", 1.0)),
+                    "ne_wm_stability": float(sim.brain.lc.last.get("wm_stability", 1.0)),
+                    "pp": {
+                        "pe_norm": float(sim.brain.last_pp.get("pe_norm", 0.0)),
+                        "pe_ema": float(sim.brain.last_pp.get("pe_ema", 0.0)),
+                        "yhat_next": sim.brain.last_pp.get("yhat_next", np.zeros(6)).tolist(),
+                    },
                     "place_nav_mag": place_metrics["place_nav_mag"],
                     "place_act_max": place_metrics["place_act_max"],
                     "place_goal_strength": place_metrics["place_goal_strength"],
@@ -2989,6 +3294,8 @@ def lab_results():
 def history():
     with sim_lock:
         data = []
+        if float(sim.config.get("deterministic", 0.0)) > 0.5:
+            return jsonify(data)
         if os.path.exists("evolution_log.csv"):
             with open("evolution_log.csv", "r") as f:
                 reader = csv.DictReader(f)
@@ -3002,6 +3309,9 @@ def load_generation():
     with sim_lock:
         payload = request.json or {}
         gen_id = str(payload.get("generation"))
+
+        if float(sim.config.get("deterministic", 0.0)) > 0.5:
+            return jsonify({"status": "error", "msg": "Deterministic mode: load disabled"}), 400
 
         if os.path.exists("evolution_log.csv"):
             with open("evolution_log.csv", "r") as f:
@@ -3038,8 +3348,9 @@ def reset():
         sim.deaths = 0
         sim.generation = 1
 
-        with open("evolution_log.csv", "w") as f:
-            f.write("Generation,Fitness,Amygdala,Striatum,Hippocampus\n")
+        if not (float(sim.config.get("deterministic", 0.0)) > 0.5):
+            with open("evolution_log.csv", "w") as f:
+                f.write("Generation,Fitness,Amygdala,Striatum,Hippocampus\n")
 
         walls = []
         for y in range(sim.map_size):
@@ -3118,6 +3429,20 @@ def config():
             sim.config["panic_motor_bias"] = clamp(float(payload["panic_motor_bias"]), 0.0, 5.0)
         if "stress_learning_gain" in payload:
             sim.config["stress_learning_gain"] = clamp(float(payload["stress_learning_gain"]), 0.0, 5.0)
+        if "enable_predictive_processing" in payload:
+            sim.config["enable_predictive_processing"] = clamp(float(payload["enable_predictive_processing"]), 0.0, 1.0)
+        if "pp_lr" in payload:
+            sim.config["pp_lr"] = clamp(float(payload["pp_lr"]), 0.0, 1.0)
+        if "pp_weight_decay" in payload:
+            sim.config["pp_weight_decay"] = clamp(float(payload["pp_weight_decay"]), 0.0, 1.0)
+        if "pp_error_tau" in payload:
+            sim.config["pp_error_tau"] = clamp(float(payload["pp_error_tau"]), 0.0, 10.0)
+        if "pp_surprise_gain" in payload:
+            sim.config["pp_surprise_gain"] = clamp(float(payload["pp_surprise_gain"]), 0.0, 5.0)
+        if "pp_explore_gain" in payload:
+            sim.config["pp_explore_gain"] = clamp(float(payload["pp_explore_gain"]), 0.0, 5.0)
+        if "pp_error_scale" in payload:
+            sim.config["pp_error_scale"] = clamp(float(payload["pp_error_scale"]), 0.0, 10.0)
 
         new_det = float(sim.config.get("deterministic", 0.0))
         new_seed = sim.config.get("seed")
