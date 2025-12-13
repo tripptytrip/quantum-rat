@@ -134,6 +134,35 @@
                         </div>
                     </div>
 
+                    <div class="bg-zinc-900 p-4 rounded border border-purple-900/30 space-y-3" data-tip="neuromodulation">
+                        <h3 class="text-[10px] text-purple-400 uppercase tracking-widest mb-1 border-b border-purple-900/30 pb-1">Neuromodulation Core</h3>
+                        
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-pink-400 font-semibold">ACETYLCHOLINE (Precision)</span>
+                                <span id="val-ach" class="text-pink-300">0.00</span>
+                            </div>
+                            <div class="h-2 bg-zinc-800 rounded overflow-hidden relative">
+                                <div id="bar-ach" class="h-full bg-pink-500 w-0 transition-all duration-200"></div>
+                            </div>
+                        </div>
+
+                        <div class="flex justify-between items-center bg-black p-2 rounded border border-zinc-800">
+                            <span class="text-[10px] text-zinc-500">LEARNING MODE</span>
+                            <span id="lbl-mode" class="text-xs font-bold text-zinc-400 tracking-wider">BALANCED</span>
+                        </div>
+
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-cyan-500 font-semibold">EXP. UNCERTAINTY</span>
+                                <span id="val-unc" class="text-cyan-300">0.00</span>
+                            </div>
+                            <div class="h-2 bg-zinc-800 rounded overflow-hidden relative">
+                                <div id="bar-unc" class="h-full bg-cyan-600 w-0 transition-all duration-200"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="bg-zinc-900 p-4 rounded border border-zinc-800 space-y-3" data-tip="physio">
                          <div>
                              <div class="flex justify-between text-xs mb-1"><span class="text-orange-500 font-semibold">FRUSTRATION</span><span id="val-frust" class="text-orange-300">0.00</span></div>
@@ -378,6 +407,10 @@
         "replay_steps": {
             title: "Replay Steps",
             text: "How many snapshots replayed per microsleep. More = stronger offline learning, but heavier compute."
+        },
+        "neuromodulation": {
+            title: "Cholinergic System (ACh)",
+            text: "ACh tracks expected uncertainty to set precision. High ACh = Encoding mode (sharp input filtering). Low ACh = Recall mode (memory-driven, replay-friendly)."
         }
     };
 
@@ -1011,6 +1044,31 @@
                 const atpBar = document.getElementById('bar-atp');
                 atpBar.style.width = atpPercent + '%';
                 
+                // --- ACETYLCHOLINE & UNCERTAINTY ---
+                if (stats.ach_tonic !== undefined) {
+                    const achVal = Math.max(0, Math.min(1, stats.ach_tonic));
+                    document.getElementById('val-ach').innerText = achVal.toFixed(2);
+                    document.getElementById('bar-ach').style.width = (achVal * 100) + '%';
+
+                    const uncVal = Math.max(0, stats.ne_uncertainty || 0);
+                    document.getElementById('val-unc').innerText = uncVal.toFixed(3);
+                    document.getElementById('bar-unc').style.width = (Math.min(uncVal, 1.0) * 100) + '%';
+
+                    const modeEl = document.getElementById('lbl-mode');
+                    const achMode = stats.ach_mode || 'BALANCED';
+                    modeEl.innerText = achMode;
+                    if (achMode === 'ENCODING') {
+                        modeEl.className = "text-xs font-bold text-pink-400 tracking-wider animate-pulse";
+                        modeEl.style.textShadow = "0 0 5px #ec4899";
+                    } else if (achMode === 'RECALL') {
+                        modeEl.className = "text-xs font-bold text-blue-400 tracking-wider";
+                        modeEl.style.textShadow = "none";
+                    } else {
+                        modeEl.className = "text-xs font-bold text-zinc-500 tracking-wider";
+                        modeEl.style.textShadow = "none";
+                    }
+                }
+
                 // --- UPDATED VISUAL FEEDBACK ---
                 const vignette = document.getElementById('energy-vignette');
                 const threeCont = document.getElementById('three-container');
