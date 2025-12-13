@@ -1084,6 +1084,9 @@ class DendriticCluster:
         self.wm_dim = 16
         self.wm_slots = [{"v": np.zeros(self.wm_dim), "strength": 0.0, "age": 0, "tag": 0} for _ in range(self.wm_slots_n)]
         self.last_wm_bias = np.zeros(2)
+        self.wm_write_threshold = 0.2
+        self.wm_decay_rate = 0.02
+        self.wm_motor_gain = 1.0
 
         # STC variables
         self.synaptic_tags = np.zeros(3)
@@ -1119,11 +1122,7 @@ class DendriticCluster:
         return bump / np.sum(bump)
 
     def _reset_wm(self):
-        for slot in self.wm_slots:
-            slot["v"].fill(0.0)
-            slot["strength"] = 0.0
-            slot["age"] = 0
-            slot["tag"] = 0
+        self.wm_slots = [{"v": np.zeros(self.wm_dim), "strength": 0.0, "age": 0, "tag": 0} for _ in range(self.wm_slots_n)]
         self.last_wm_bias = np.zeros(2)
 
     def _build_wm_candidate(
@@ -1171,7 +1170,7 @@ class DendriticCluster:
         return vec
 
     def _wm_decay_slots(self, dt: float):
-        decay = max(0.0, 1.0 - 0.02 * dt)
+        decay = max(0.0, 1.0 - self.wm_decay_rate * dt)
         for slot in self.wm_slots:
             slot["strength"] *= decay
             slot["age"] += 1
@@ -1196,7 +1195,7 @@ class DendriticCluster:
         return best_idx, best_score
 
     def _wm_write(self, candidate: np.ndarray, drive: float):
-        if drive <= 0.35:
+        if drive <= self.wm_write_threshold:
             return
         strengths = [slot["strength"] for slot in self.wm_slots]
         target_idx = int(np.argmin(strengths))
@@ -1662,7 +1661,7 @@ class DendriticCluster:
         wm_stability = float(lc_out.get("wm_stability", 1.0)) if lc_out else 1.0
         current_memory = self.pfc.memory * gain_memory * cortical_gain * wm_stability
         if wm_best_strength > 0:
-            current_memory = np.clip(current_memory + (wm_bias_vec * 0.5), -3.0, 3.0)
+            current_memory = np.clip(current_memory + (wm_bias_vec * self.wm_motor_gain), -3.0, 3.0)
 
         # --- PREDICTIVE PROCESSING UPDATE ---
         if config.get("enable_predictive_processing", 0.0) > 0.5:
@@ -1977,6 +1976,11 @@ class SimulationState:
             "pp_surprise_gain": 1.0,
             "pp_explore_gain": 0.5,
             "pp_error_scale": 1.5,
+            # --- WORKING MEMORY ---
+            "wm_slots": 5,               # number of WM slots (1-10)
+            "wm_write_threshold": 0.2,   # lower = easier to store
+            "wm_decay_rate": 0.02,       # per-step decay factor
+            "wm_motor_gain": 1.0,        # influence of WM bias on action
         }
         self.apply_runtime_config()
 
@@ -2099,6 +2103,15 @@ class SimulationState:
             self.brain.last_bf = {"precision_gain": 0.0, "mode": "BALANCED", "tonic_ach": 0.2}
         if hasattr(self.brain, "_reset_wm"):
             self.brain._reset_wm()
+        # Apply WM config knobs
+        if hasattr(self.brain, "wm_slots_n"):
+            wm_slots_cfg = int(np.clip(int(self.config.get("wm_slots", self.brain.wm_slots_n)), 1, 10))
+            if wm_slots_cfg != self.brain.wm_slots_n:
+                self.brain.wm_slots_n = wm_slots_cfg
+                self.brain._reset_wm()
+            self.brain.wm_write_threshold = float(clamp(self.config.get("wm_write_threshold", 0.2), 0.0, 1.0))
+            self.brain.wm_decay_rate = float(clamp(self.config.get("wm_decay_rate", 0.02), 0.0, 1.0))
+            self.brain.wm_motor_gain = float(clamp(self.config.get("wm_motor_gain", 1.0), 0.0, 5.0))
         
         if self.config.get("enable_place_cells", 0.0) > 0.5:
             if self.brain.place_cells is None or \
@@ -3650,6 +3663,15 @@ def config():
             sim.config["place_nav_gain"] = clamp(float(payload["place_nav_gain"]), 0.0, 5.0)
         if "goal_reward_threshold" in payload:
             sim.config["goal_reward_threshold"] = clamp(float(payload["goal_reward_threshold"]), 0.0, 1.0)
+        # --- WORKING MEMORY ---
+        if "wm_slots" in payload:
+            sim.config["wm_slots"] = int(np.clip(int(payload["wm_slots"]), 1, 10))
+        if "wm_write_threshold" in payload:
+            sim.config["wm_write_threshold"] = clamp(float(payload["wm_write_threshold"]), 0.0, 1.0)
+        if "wm_decay_rate" in payload:
+            sim.config["wm_decay_rate"] = clamp(float(payload["wm_decay_rate"]), 0.0, 1.0)
+        if "wm_motor_gain" in payload:
+            sim.config["wm_motor_gain"] = clamp(float(payload["wm_motor_gain"]), 0.0, 5.0)
 
         new_det = float(sim.config.get("deterministic", 0.0))
         new_seed = sim.config.get("seed")
