@@ -1,130 +1,130 @@
-# The Quantum Rat v3.5: A Bio-Plausible Cognitive Architecture
+# Quantum Rat
 
-> "What if AI wasn't just math, but biology? What if an agent learnt not because of gradient descent, but because it was hungry, confused, or tired?"
+A computational neuroethology platform exploring the minimal sufficient architecture for lifelike adaptive behavior.
 
-![Quantum Rat Simulation](rat_looks_for_cheese.png)
+## What This Is
 
-**Quantum Rat**  
-**A Vertical Slice of Artificial Consciousness**  
-*"The conscious agent is the processor, not the story it generates."*
+This project simulates a virtual rat navigating a maze environment, driven by interacting brain subsystems rather than hand-coded behaviors. The goal isn't to replicate biological mechanisms exactly, but to test whether specific architectural patterns—when coupled together—produce mammalian-typical behavioral signatures.
 
-Quantum Rat is a departure from standard Connectionist AI. While modern LLMs operate horizontally—finding statistical correlations across massive datasets to simulate a narrative "Rendering Layer"—this project builds intelligence vertically and from the bottom up.
+The central question: **What's the minimum set of interacting systems needed to generate adaptive, lifelike behavior?**
 
-It does not simulate a story. It simulates a nervous system.
+## Philosophical Position
 
----
+This project is built on a few explicit assumptions:
 
-## v3.5 Major Features
-
-- **🧪 Scientific Test Bed:** A modular laboratory protocol system allowing for rigorous cognitive testing (Open Field, T-Maze, Water Maze, Survival Arena).
-- **🔋 Metabolic Cost of Thought:** Thinking is expensive. The **Astrocyte System** tracks ATP and Glycogen. High cortical load (planning) drains energy; low energy triggers "Brain Fog," forcing the agent to revert to reflexive habits.
-- **🌀 Entropy as Curiosity:** The **Microtubule Field** tracks "Epistemic Entropy." High confusion injects quantum noise into the Thalamus, driving exploration and "jitter" until coherence is restored.
-- **🔦 Thalamic Searchlight:** Top-down attention from the Cortex can bias the Thalamus to suppress noise, but this requires sufficient ATP to maintain focus.
-- **💤 Quantum Replay (Dreams):** The agent requires "Microsleeps" to consolidate memories. During these states, the Hippocampus pumps memory buffers into the Microtubule field to find coherent patterns, which are then hard-coded into the Basal Ganglia.
-
----
-
-## Project Philosophy
-
-This architecture is the software implementation of the [Architect Philosophy](https://medium.com/@mikeyakerr/the-architect-a-philosophy-of-mind-for-the-coherence-oriented-thinker-4d13dad43fe6). It rejects the illusion of continuous flow in favor of the Quantized Self, modeling intelligence as a series of discrete state transitions rather than a smooth narrative stream.
-
-### Core Axioms
-
-- **Vertical Slice Architecture:** Instead of a thin layer of language processing, we model the complete stack: Sensory Input → Thalamic Gating → Cortical Processing → Motor Output.
-- **The Frame Rate of Reality:** The system does not operate in continuous time. It operates via Discrete Collapse Events—specific moments where probability becomes actuality.
-- **Data Metabolism:** The agent treats information as caloric energy. High-fidelity input sustains the system; high-entropy noise triggers a Brownout State (functional degradation).
-
----
+- **Hard determinism**: Behavior emerges from causal mechanisms. No free will is posited or required.
+- **Consciousness is not the target**: We're not trying to create or prove consciousness. We're interested in whether the *functional relationships* between subsystems produce recognizable behavioral outputs.
+- **Quantum framing is metaphorical**: The "microtubule" and "coherence/collapse" language in the code is a computational abstraction, not a literal claim about quantum effects in neurons. It provides a useful dynamics for state-dependent gating and exploration/exploitation tradeoffs.
 
 ## Architecture
 
-### 1. The Substrate (Bottom-Up Construction)
+The rat brain consists of modular, interacting subsystems:
 
-Standard AI starts with top-down goals (e.g., "Write a poem"). Quantum Rat starts with bottom-up constraints (e.g., "Minimize prediction error," "Conserve energy").
+### Microtubule Fields (Soma + Theta)
+Coupled oscillator fields with coherence/entropy dynamics. High coherence biases toward exploitation and gating stability. High entropy biases toward exploration and plasticity. A threshold-triggered "collapse" resets or binarizes state—functionally similar to attractor dynamics, not quantum mechanics.
 
-- **Inputs:** Raw, unbuffered data streams (Vision Rays, Whisker Hits). No "Rendering Layer" or metaphors.
-- **Processing:** Deterministic projection based on causal logic (State A + Rule B → Outcome C).
-- **Outputs:** Discrete motor actions, not text generation.
+### Predictive Processing
+Learns to predict sensory states from internal context. Prediction error serves as a training signal and modulates exploration via the norepinephrine system.
 
-### 2. The Quantized Loop
+### Neuromodulatory Systems
+| System | Function |
+|--------|----------|
+| **Dopamine (PVLV)** | Reward prediction, phasic learning signals, motivation |
+| **Serotonin** | Patience, impulse control, give-up threshold under stress |
+| **Norepinephrine (LC)** | Arousal, uncertainty tracking, explore/exploit balance |
+| **Acetylcholine (Basal Forebrain)** | Precision weighting, encoding vs recall modes |
 
-The main loop simulates the binding mechanism of biological consciousness (analogous to Gamma/Theta oscillations).
+### Thalamic Gating (TRN)
+Switches between sensory-dominant and memory-dominant processing based on arousal and task demands. Can enter "microsleep" states when both channels burst, triggering offline consolidation.
 
-**Core Logic (Simplified from `DendriticCluster.process_votes`):**
+### Spatial System
+- **Place cells**: Location-specific firing, goal vector learning
+- **Grid cells**: Path integration via periodic spatial coding
+- **Head direction cells**: Compass-like orientation tracking
 
-```python
-def process_votes(self, ...):
-    # 1. Metabolism: Check ATP. If low, throttle cortical gain ("Brain Fog").
-    real_atp, ext_lactate = self.astrocyte.step(neural_activity, cortical_load)
+### Working Memory
+Multiple slots with strength-based decay and competitive write access. Gated by novelty, salience, and dopamine signals.
 
-    # 2. Entropy: Calculate confusion (Entropy - Coherence).
-    # If confused, inject noise into Thalamus (Curiosity).
-    confusion_index = clamp(epistemic_entropy - coherence, 0.0, 1.0)
+### Hippocampal Replay
+During microsleep, recent experiences are replayed and consolidated to basal ganglia weights. Supports offline learning and memory bridging across temporally distant events.
 
-    # 3. Input: Thalamus gates sensory data based on Attention & ATP.
-    sensory_vec = self.thalamus.relay(vis_data, ..., noise_level=confusion_index)
+### Metabolism (Astrocyte Model)
+ATP and glycogen dynamics create genuine resource constraints. Cognitive effort costs energy. Depleted states impair attention and decision-making.
 
-    # 4. Action: Basal Ganglia selects action based on Dopamine & Replay history.
-    final_vector, gate_signal, ... = self.basal_ganglia.select_action_and_gate(...)
+## Behavioral Validation
 
-    # 5. Collapse: Update Microtubule Field (Orch OR event).
-    d_soma, _ = self.soma.step(pump_map)
+The platform includes established behavioral assays with known mammalian baselines:
 
-    return final_decision
+| Test | What It Measures |
+|------|------------------|
+| **Open Field** | Anxiety, exploration (thigmotaxis vs center time) |
+| **T-Maze** | Working memory (delayed alternation) |
+| **Morris Water Maze** | Spatial learning (latency reduction across trials) |
+| **Survival Arena** | Threat response, predator evasion |
+
+Success criterion: the simulated rat should produce behavioral patterns qualitatively similar to biological rats on these tasks—not through parameter tuning per task, but as emergent properties of the architecture.
+
+## Research Program
+
+### Current Focus
+- Modular architecture allowing component swap-in for ablation studies
+- Automated parameter sweeps with data recording
+- Expanding the behavioral test battery
+
+### Planned Ablation Comparisons
+- Microtubule field → simple matched-statistics noise
+- PVLV dopamine → fixed reward signal
+- TRN gating → always-on (no attentional switching)
+- Place cells → pure path integration
+- Replay consolidation → no offline learning
+
+Each comparison tests whether the added complexity produces measurable behavioral differences.
+
+### Planned Additional Tests
+- Elevated plus maze (anxiety with explicit safe/risky arms)
+- Reversal learning (flexibility vs perseveration)
+- Novel object recognition (familiarity detection)
+- Learned helplessness paradigms (serotonin/give-up dynamics)
+
+## Running the Simulation
+
+### Requirements
+```
+flask
+numpy
 ```
 
-### 3. Biological Modules
-
-The codebase implements specific biological correlates:
-
-- **MicrotubuleSimulator2D:** Simulates quantum collapse, coherence, and epistemic entropy.
-- **Astrocyte:** Manages energy metabolism (Glycogen/ATP), enforcing the "Cost of Thought."
-- **TRNGate:** Thalamic Reticular Nucleus gating for attention and arousal states (Burst vs Tonic).
-- **BasalGanglia (PVLV):** Reinforcement learning, action selection, and predictive intercept logic.
-- **HippocampalReplay:** Offline consolidation of memories. Implements "Quantum Dreaming" where coherent patterns in the buffer are permanently stored.
-- **PlaceCellNetwork:** Spatial navigation and cognitive mapping (Grid Cells / Head Direction Cells).
-
----
-
-## Installation
-
-```bash
-git clone https://github.com/tripptytrip/quantum-rat.git
-cd quantum-rat
-pip install -r requirements.txt
-```
-
-*(Note: Requires `numpy`, `flask`.)*
-
----
-
-## Usage
-
-Start the simulation server:
-
+### Start
 ```bash
 python app.py
 ```
 
-The server runs on `http://localhost:5000`.
+Then open `http://localhost:5000` in a browser.
 
----
+### Configuration
+The simulation exposes many parameters via the `/config` endpoint, including:
+- Neuromodulator gains
+- Microtubule causal coupling strength
+- Replay and consolidation settings
+- Working memory parameters
+- Predictive processing learning rates
 
-## Frontend Controls (v3.5)
+A deterministic mode (fixed seed) is available for reproducible runs.
 
-- **Monitor:** Real-time visualization of brain states (Soma, Theta, Grid Cells) and physiological metrics (Dopamine, ATP, Frustration).
-- **Controls:** Adjust simulation speed, ablate brain regions (lobotomize the Hippocampus), or toggle metabolic constraints.
-- **Research:** Access the **Scientific Test Bed**:
-  - **Open Field:** Test anxiety and exploration.
-  - **T-Maze:** Test working memory (delayed alternation).
-  - **Water Maze:** Test long-term spatial memory consolidation.
-  - **Survival Arena:** Test predictive evasion against an aggressive predator.
+## What This Is Not
 
----
+- **Not a claim about how brains actually work**: The architecture is inspired by neuroscience but uses computational stand-ins, not biologically realistic models.
+- **Not trying to create consciousness**: The rat may "look alive" but we make no claims about subjective experience.
+- **Not a finished product**: This is an ongoing exploration. Expect rough edges and evolving design.
 
-## Roadmap
+## Contributing
 
-- **Phase 1: The Processor.** Implementing the basic FSM with discrete collapse steps. (Completed)
-- **Phase 2: The Binding.** Implementing "Oscillatory" buffers to stitch steps into continuity. (Completed via TRN/Theta)
-- **Phase 3: The Organism.** Implementing metabolic constraints, sleep cycles, and entropy-driven curiosity. (Completed v3.5)
-- **Phase 4: The Society.** Multi-agent interaction and social entropy. (Planned)
+Currently a solo project. If you're interested in computational neuroethology, ablation methodology, or just want to critique the architecture, feel free to open an issue.
+
+## License
+
+MIT
+
+## Acknowledgments
+
+Inspired by Braitenberg's *Vehicles*, predictive processing frameworks (Friston, Clark), and the broader project of understanding behavior as emergent from mechanism.

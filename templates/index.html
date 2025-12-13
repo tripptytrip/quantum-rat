@@ -490,11 +490,13 @@
         if (!sel) return;
         const res = await fetch('/maps/list');
         const data = await res.json();
-        sel.innerHTML = '<option value="" disabled selected>Select a map...</option>';
+        const defaultName = "quarters";
+        sel.innerHTML = '<option value="" disabled>Select a map...</option>';
         (data.maps || []).forEach(m => {
             const opt = document.createElement('option');
             opt.value = m;
-            opt.innerText = m;
+            opt.innerText = (m === "__random__") ? "Random Maze" : m;
+            if (m === defaultName) opt.selected = true;
             sel.appendChild(opt);
         });
     }

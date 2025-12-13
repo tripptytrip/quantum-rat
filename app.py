@@ -2018,6 +2018,8 @@ class SimulationState:
 
         self.occupancy_grid = np.zeros((self.map_size, self.map_size), dtype=int)
         self.generate_map()
+        # Try to load a preferred default map if it exists
+        self._apply_default_map("quarters")
 
     def _init_rngs(self, seed: Optional[int]):
         base_ss = np.random.SeedSequence(seed)
@@ -2056,6 +2058,7 @@ class SimulationState:
             self.brain.place_cells.reset()
         # Regenerate map and reset position/velocity
         self.generate_map()
+        self._apply_default_map("quarters")
         self.rat_pos = np.array([3.0, 3.0])
         self.rat_vel = np.array([0.0, 0.6])
         self.rat_heading = np.pi / 2
@@ -2184,6 +2187,31 @@ class SimulationState:
                     self.pheromones = []
                     self.brain.astrocyte = Astrocyte()
                     break
+
+    def _apply_custom_grid(self, grid: np.ndarray):
+        if grid.shape != (self.map_size, self.map_size):
+            return False
+        self.occupancy_grid = grid.copy()
+        self.occupancy_grid[0, :] = 1
+        self.occupancy_grid[-1, :] = 1
+        self.occupancy_grid[:, 0] = 1
+        self.occupancy_grid[:, -1] = 1
+        self.targets = [self._spawn_single_target() for _ in range(3)]
+        self.rat_pos = np.array([3.0, 3.0])
+        self.rat_vel = np.array([0.0, 0.6])
+        if hasattr(self, "predator") and self.predator is not None:
+            self.predator.pos = np.array([-100.0, -100.0])
+        self.pheromones = []
+        if hasattr(self.brain, "place_cells") and self.brain.place_cells is not None:
+            self.brain.place_cells.reset()
+        return True
+
+    def _apply_default_map(self, name: str):
+        data = load_custom_maps_data()
+        if name not in data:
+            return
+        grid = np.array(data[name], dtype=int)
+        self._apply_custom_grid(grid)
 
     def check_collision(self, pos):
         def is_wall(x, y):
@@ -3150,21 +3178,26 @@ def step():
                                 "place_goal_strength": place_metrics["place_goal_strength"],
                                 "mt_theta_readouts": theta_r,
                                 "mt_soma_readouts": soma_r,
-                    "mt_plasticity_mult": mt_plasticity_mult,
-                    "mt_gate_thr": mt_gate_thr,
-                    "ne_uncertainty": float(sim.brain.lc.uncertainty),
-                    "ne_mode": sim.brain.lc.mode,
-                    "ne_habit_weight": float(sim.brain.lc.last.get("habit_weight", 1.0)),
-                    "ne_wm_stability": float(sim.brain.lc.last.get("wm_stability", 1.0)),
-                    "serotonin_patience": 0.5 + (sim.serotonin * 0.5),
-                    "serotonin_safety": 0.5 + (sim.serotonin * 1.0),
-                    "serotonin_compulsivity": 1.0 + (1.0 - sim.serotonin) * 0.8,
-                    "ach_tonic": float(sim.brain.last_bf.get("tonic_ach", 0.0)),
-                    "ach_mode": sim.brain.last_bf.get("mode", "BALANCED"),
-                    "ach_precision_gain": float(sim.brain.last_bf.get("precision_gain", 0.0)),
-                    "pp": {
-                        "pe_norm": float(sim.brain.last_pp.get("pe_norm", 0.0)),
-                        "pe_ema": float(sim.brain.last_pp.get("pe_ema", 0.0)),
+                                "mt_plasticity_mult": mt_plasticity_mult,
+                                "mt_gate_thr": mt_gate_thr,
+                                "ne_uncertainty": float(sim.brain.lc.uncertainty),
+                                "ne_mode": sim.brain.lc.mode,
+                                "ne_habit_weight": float(sim.brain.lc.last.get("habit_weight", 1.0)),
+                                "ne_wm_stability": float(sim.brain.lc.last.get("wm_stability", 1.0)),
+                                "ach_tonic": float(sim.brain.last_bf.get("tonic_ach", 0.0)),
+                                "ach_mode": sim.brain.last_bf.get("mode", "BALANCED"),
+                                "ach_precision_gain": float(sim.brain.last_bf.get("precision_gain", 0.0)),
+                                "wm": {
+                                    "slots": len(sim.brain.wm_slots),
+                                    "write_threshold": float(sim.brain.wm_write_threshold),
+                                    "decay_rate": float(sim.brain.wm_decay_rate),
+                                    "motor_gain": float(sim.brain.wm_motor_gain),
+                                    "bias_vec": sim.brain.last_wm_bias.tolist(),
+                                    "slot_strengths": [float(s.get("strength", 0.0)) for s in getattr(sim.brain, "wm_slots", [])],
+                                },
+                                "pp": {
+                                    "pe_norm": float(sim.brain.last_pp.get("pe_norm", 0.0)),
+                                    "pe_ema": float(sim.brain.last_pp.get("pe_ema", 0.0)),
                                     "yhat_next": sim.brain.last_pp.get("yhat_next", np.zeros(6)).tolist(),
                                 },
                             },
@@ -3442,6 +3475,14 @@ def step():
                     "ne_mode": sim.brain.lc.mode,
                     "ne_habit_weight": float(sim.brain.lc.last.get("habit_weight", 1.0)),
                     "ne_wm_stability": float(sim.brain.lc.last.get("wm_stability", 1.0)),
+                    "wm": {
+                        "slots": len(sim.brain.wm_slots),
+                        "write_threshold": float(sim.brain.wm_write_threshold),
+                        "decay_rate": float(sim.brain.wm_decay_rate),
+                        "motor_gain": float(sim.brain.wm_motor_gain),
+                        "bias_vec": sim.brain.last_wm_bias.tolist(),
+                        "slot_strengths": [float(s.get("strength", 0.0)) for s in getattr(sim.brain, "wm_slots", [])],
+                    },
                     "pp": {
                         "pe_norm": float(sim.brain.last_pp.get("pe_norm", 0.0)),
                         "pe_ema": float(sim.brain.last_pp.get("pe_ema", 0.0)),
@@ -3695,7 +3736,8 @@ def config():
 @app.route("/maps/list", methods=["GET"])
 def list_maps():
     maps = load_custom_maps_data()
-    return jsonify({"maps": list(maps.keys())})
+    # Expose a synthetic option for generating a fresh random maze
+    return jsonify({"maps": ["__random__"] + list(maps.keys())})
 
 
 @app.route("/maps/save", methods=["POST"])
@@ -3719,37 +3761,18 @@ def load_map():
     name = req.get("name")
     data = load_custom_maps_data()
 
-    if name not in data:
-        return jsonify({"error": "Map not found"}), 404
-
     with sim_lock:
-        new_grid = np.array(data[name], dtype=int)
+        if name == "__random__":
+            sim.generate_map()
+            new_grid = sim.occupancy_grid
+        else:
+            if name not in data:
+                return jsonify({"error": "Map not found"}), 404
+            new_grid = np.array(data[name], dtype=int)
 
-        if new_grid.shape != (sim.map_size, sim.map_size):
-            # For now, assume 40x40; reject unexpected sizes to avoid crashes.
+        if not sim._apply_custom_grid(new_grid):
             return jsonify({"error": "Invalid map size"}), 400
-
-        sim.occupancy_grid = new_grid
-
-        # Safety: Ensure outer walls exist
-        sim.occupancy_grid[0, :] = 1
-        sim.occupancy_grid[-1, :] = 1
-        sim.occupancy_grid[:, 0] = 1
-        sim.occupancy_grid[:, -1] = 1
-
-        # Reset agents to safe positions
-        safe_pos = [3.0, 3.0]
-        empty_spots = np.argwhere(sim.occupancy_grid == 0)
-        if len(empty_spots) > 0:
-            choice = empty_spots[len(empty_spots) // 2]
-            safe_pos = [float(choice[1]) + 0.5, float(choice[0]) + 0.5]
-
-        sim.rat_pos = np.array(safe_pos)
-        sim.rat_vel = np.array([0.0, 0.0])
-        sim.predator.pos = np.array([-100.0, -100.0])
-        sim.pheromones = []
-        if hasattr(sim.brain, "place_cells") and sim.brain.place_cells is not None:
-            sim.brain.place_cells.reset()
+        safe_pos = sim.rat_pos.tolist()
 
         walls = []
         for y in range(sim.map_size):
