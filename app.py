@@ -2764,9 +2764,6 @@ def step():
                         min_dist = dist
                         target_pos = t
 
-            tonic_target = clamp(0.25 + 0.5 * reward_signal - 0.2 * sim.frustration, 0.0, 1.0)
-            sim.dopamine_tonic = 0.95 * sim.dopamine_tonic + 0.05 * tonic_target
-
             # UPDATE UNPACKING: Add internal dopamine (total + phasic) at the end
             soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, pain, touch, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine, internal_dopamine_phasic = sim.brain.process_votes(
                 sim.frustration,
