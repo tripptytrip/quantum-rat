@@ -407,9 +407,10 @@ class PVLV_Learning:
         self.alpha_pv = 0.1
         self.alpha_lv = 0.05
 
-    def step(self, sensory_drive: float, reward_present: float):
+    def step(self, sensory_drive: float, reward_present: float, baseline_dopamine: float = 0.0):
         sensory_drive = float(max(0.0, sensory_drive))
         reward_present = float(max(0.0, reward_present))
+        baseline_dopamine = float(clamp(baseline_dopamine, 0.0, 1.5))
 
         pv_prediction = self.w_pv * sensory_drive
         pv_error = reward_present - pv_prediction
@@ -419,8 +420,9 @@ class PVLV_Learning:
         lv_error = pv_prediction - lv_prediction
         self.w_lv += self.alpha_lv * lv_error * sensory_drive
 
-        dopamine = pv_error + lv_prediction
-        return float(dopamine)
+        phasic_dopamine = pv_error + lv_prediction
+        dopamine_total = clamp(baseline_dopamine + phasic_dopamine, -1.0, 2.0)
+        return float(dopamine_total), float(phasic_dopamine)
 
 
 class LocusCoeruleus:
@@ -634,16 +636,17 @@ class BasalGanglia:
         mt_causal: bool = False,
         mt_mod_gate: float = 0.2,
         exploration_bias: float = 0.0,  # <--- NEW PARAMETER (Curiosity)
+        baseline_dopamine: float = 0.0,
     ):
         sensory_mag = float(np.linalg.norm(sensory_vec))
-        dopamine = self.pvlv.step(sensory_mag, reward)
+        dopamine_total, dopamine_phasic = self.pvlv.step(sensory_mag, reward, baseline_dopamine=baseline_dopamine)
 
         # Apply the manual slider gain to the memory vector
         effective_memory = memory_vec * memory_gain 
 
         context = np.array([np.linalg.norm(sensory_vec), np.linalg.norm(effective_memory), drive_level], dtype=float)
 
-        gate_activation = float(np.dot(self.w_gate, context) + dopamine)
+        gate_activation = float(np.dot(self.w_gate, context) + dopamine_total)
         
         thr = 0.5
         if mt_causal and theta_readouts:
@@ -652,8 +655,8 @@ class BasalGanglia:
 
         gate_signal = 1.0 if gate_activation > thr else -1.0
 
-        w_sensory = self.w_motor[0] * (1.0 + dopamine)
-        w_memory = self.w_motor[1] * (1.0 - dopamine)
+        w_sensory = self.w_motor[0] * (1.0 + dopamine_total)
+        w_memory = self.w_motor[1] * (1.0 - dopamine_total)
         
         # Use effective_memory here
         motor_out = (sensory_vec * w_sensory) + (effective_memory * w_memory)
@@ -670,13 +673,13 @@ class BasalGanglia:
 
         if learning_rate_mod > 0.1:
             lr = 0.01 * learning_rate_mod
-            self.w_gate += lr * dopamine * context
-            self.w_motor += lr * dopamine
+            self.w_gate += lr * dopamine_total * context
+            self.w_motor += lr * dopamine_total
 
             self.w_gate = np.clip(self.w_gate, -1.0, 1.0)
             self.w_motor = np.clip(self.w_motor, 0.0, 5.0)
 
-        return motor_out, gate_signal, dopamine, thr
+        return motor_out, gate_signal, dopamine_total, thr, dopamine_phasic
 
 
 class TimeCellPopulation:
@@ -1083,7 +1086,7 @@ class DendriticCluster:
     def process_votes(
         self,
         frustration,
-        dopamine,
+        dopamine_tonic,
         rat_vel,
         reward_signal,
         danger_level,
@@ -1344,7 +1347,7 @@ class DendriticCluster:
         # --- LOGIC UPDATE: Pass memory_gain ---
         mt_causal_flag = float(config.get("mt_causal", 0.0)) > 0.5
         mt_gate_mod = float(config.get("mt_mod_gate", 0.2))
-        final_vector, gate_signal, internal_dopamine, mt_gate_thr = self.basal_ganglia.select_action_and_gate(
+        final_vector, gate_signal, internal_dopamine_total, mt_gate_thr, internal_dopamine_phasic = self.basal_ganglia.select_action_and_gate(
             sensory_vec,
             current_memory,
             frustration,
@@ -1355,7 +1358,8 @@ class DendriticCluster:
             mt_causal=mt_causal_flag,
             mt_mod_gate=mt_gate_mod,
             # NEW ARG:
-            exploration_bias=bg_exploration
+            exploration_bias=bg_exploration,
+            baseline_dopamine=dopamine_tonic,
         )
         
         # ... rest of the function remains the same ...
@@ -1363,7 +1367,7 @@ class DendriticCluster:
         consolidation_vector = self.update_stc(activity_proxy, reward_signal)
 
         if float(np.max(consolidation_vector)) > 0.1:
-            self.basal_ganglia.w_gate += 0.001 * consolidation_vector * internal_dopamine
+            self.basal_ganglia.w_gate += 0.001 * consolidation_vector * internal_dopamine_total
 
         self.pfc.update(sensory_vec, gate_signal)
 
@@ -1433,7 +1437,7 @@ class DendriticCluster:
                 near_death=near_death,
             )
 
-        return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp, pain, touch, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine
+        return d_soma, d_theta, self.get_grid_visualization(), final_vector, self.astrocyte.glycogen, self.astrocyte.neuronal_atp, pain, touch, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine_total, internal_dopamine_phasic
 
 
 
@@ -1508,7 +1512,9 @@ class SimulationState:
         self.score = 0
         self.deaths = 0
         self.frustration = 0.0
-        self.dopamine = 0.2
+        self.dopamine_ema = 0.2       # smoothed total for UI/behaviour
+        self.dopamine_tonic = 0.2     # slow baseline mood/motivation
+        self.dopamine_phasic = 0.0    # fast PVLV error signal
         self.serotonin = 0.5
 
         self.state = "AWAKE"
@@ -1627,6 +1633,9 @@ class SimulationState:
         self.frustration = 0.0
         self.panic = 0.0
         self.cortisol = 0.0
+        self.dopamine_ema = 0.2
+        self.dopamine_tonic = 0.2
+        self.dopamine_phasic = 0.0
         self.pheromones = []
         self.phantom_trace = []
 
@@ -1997,7 +2006,8 @@ class OpenFieldProtocol(LabProtocol):
         
         # 3. Reset Brain State (Fresh subject)
         sim.frustration = 0.0
-        sim.dopamine = 0.5
+        sim.dopamine_tonic = 0.5
+        sim.dopamine_ema = 0.5
         sim.brain.astrocyte.glycogen = 1.0
         
         # Important: Ensure High Entropy start for testing curiosity
@@ -2075,7 +2085,8 @@ class TMazeProtocol(LabProtocol):
         
         # 6. Reset Brain (High Energy for the test)
         sim.frustration = 0.0
-        sim.dopamine = 0.5
+        sim.dopamine_tonic = 0.5
+        sim.dopamine_ema = 0.5
         sim.brain.astrocyte.glycogen = 1.0
         sim.brain.astrocyte.neuronal_atp = 1.0
         sim.brain.pfc.memory.fill(0.0) # Clear WM
@@ -2095,7 +2106,7 @@ class TMazeProtocol(LabProtocol):
             if dist_to_target < 1.5:
                 # Reward!
                 sim.score += 1
-                sim.dopamine = 1.0
+                sim.dopamine_tonic = clamp(sim.dopamine_tonic + 0.1, 0.0, 1.0)
                 sim.brain.astrocyte.glycogen = 1.0 # Refuel for the thinking phase
                 
                 print("LAB: Forced arm reached. Entering DELAY.")
@@ -2133,7 +2144,7 @@ class TMazeProtocol(LabProtocol):
             if dist_to_target < 1.5:
                 print("LAB: SUCCESS! Rat alternated correctly.")
                 sim.score += 10 # Big reward
-                sim.dopamine = 1.0
+                sim.dopamine_tonic = clamp(sim.dopamine_tonic + 0.2, 0.0, 1.0)
                 self.phase = "complete"
             
             # Check for Failure (Entering the WRONG arm)
@@ -2149,7 +2160,7 @@ class TMazeProtocol(LabProtocol):
         return {
             "frame": timer,
             "phase": 1 if self.phase == "forced" else (2 if self.phase == "delay" else 3),
-            "correct": 1 if self.phase == "complete" and sim.dopamine > 0.8 else 0,
+            "correct": 1 if self.phase == "complete" and sim.dopamine_ema > 0.8 else 0,
             # Pass map_update flag if we changed walls? (Handled by frontend poll usually)
         }
 
@@ -2204,7 +2215,8 @@ class MorrisWaterMazeProtocol(LabProtocol):
         sim.brain.astrocyte.glycogen = 1.0
         sim.brain.astrocyte.neuronal_atp = 1.0
         sim.frustration = 0.0
-        sim.dopamine = 0.5
+        sim.dopamine_tonic = 0.5
+        sim.dopamine_ema = 0.5
         
         # Reset Place Cells to ensure we are testing *new* learning
         if sim.brain.place_cells:
@@ -2312,7 +2324,8 @@ class SurvivalProtocol(LabProtocol):
         
         # 3. Reset Stats
         sim.frustration = 0.0
-        sim.dopamine = 1.0 # High focus required
+        sim.dopamine_tonic = 0.8 # High focus baseline required
+        sim.dopamine_ema = sim.dopamine_tonic
         sim.brain.astrocyte.glycogen = 1.0
         
         print("LAB: Survival Arena Started. GOOD LUCK.")
@@ -2476,14 +2489,17 @@ def step():
                         "predator": sim.predator.pos.tolist(),
                         "brain": {},
                         "stats": {
-                            "frustration": 0,
-                            "score": sim.score,
-                            "status": "DEAD",
-                            "panic": float(sim.panic),
-                            "cortisol": float(sim.cortisol),
-                            "mode": sim.behaviour_mode,
-                            "energy": 0,
-                            "atp": 0,
+                        "frustration": 0,
+                        "score": sim.score,
+                        "status": "DEAD",
+                        "dopamine": sim.dopamine_ema,
+                        "dopamine_tonic": sim.dopamine_tonic,
+                        "dopamine_phasic": sim.dopamine_phasic,
+                        "panic": float(sim.panic),
+                        "cortisol": float(sim.cortisol),
+                        "mode": sim.behaviour_mode,
+                        "energy": 0,
+                        "atp": 0,
                             "deaths": sim.deaths,
                             "generation": sim.generation,
                         },
@@ -2577,7 +2593,8 @@ def step():
                 dt=dt,
             )
             
-            arousal = (sim.dopamine * 0.5) + (sim.frustration * 0.5) + arousal_from_touch + lc_out["arousal_boost"] + (0.3 * panic_signal)
+            phasic_arousal = clamp(sim.dopamine_phasic, 0.0, 1.0) * 0.5
+            arousal = phasic_arousal + (sim.frustration * 0.5) + arousal_from_touch + lc_out["arousal_boost"] + (0.3 * panic_signal)
             if current_atp < 0.2:
                 arousal = 0.0
 
@@ -2603,10 +2620,10 @@ def step():
                                 min_dist = dist
                                 target_pos = t
 
-                    # UPDATE UNPACKING: Add internal_dopamine at the end
-                    soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine = sim.brain.process_votes(
+                    # UPDATE UNPACKING: Add internal dopamine (total + phasic) at the end
+                    soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine, internal_dopamine_phasic = sim.brain.process_votes(
                         sim.frustration,
-                        sim.dopamine,
+                        sim.dopamine_tonic,
                         sim.rat_vel,
                         0,
                         0,
@@ -2632,6 +2649,12 @@ def step():
                         map_size=sim.map_size,
                         predator_pos=sim.predator.pos,
                     )
+                    # Update dopamine state even during microsleep
+                    # --- VISUALIZE INTERNAL DOPAMINE ---
+                    # Smooth total dopamine (tonic + phasic) for display; derive phasic component explicitly
+                    sim.dopamine_phasic = float(internal_dopamine - sim.dopamine_tonic)
+                    sim.dopamine_ema = 0.8 * sim.dopamine_ema + 0.2 * clamp(float(internal_dopamine), -1.0, 1.0)
+
                     # --- OFFLINE HIPPOCAMPAL REPLAY ---
                     if float(sim.config.get("enable_replay", 0.0)) > 0.5:
                         sim.brain.replay.set_capacity(int(sim.config.get("replay_len", 240)))
@@ -2665,7 +2688,9 @@ def step():
                                 "frustration": sim.frustration,
                                 "score": sim.score,
                                 "status": "MICROSLEEP",
-                                "dopamine": sim.dopamine,
+                                "dopamine": sim.dopamine_ema,
+                                "dopamine_tonic": sim.dopamine_tonic,
+                                "dopamine_phasic": sim.dopamine_phasic,
                                 "serotonin": sim.serotonin,
                                 "norepinephrine": float(sim.brain.lc.tonic_ne),
                                 "ne_phasic": float(sim.brain.lc.phasic_ne),
@@ -2698,7 +2723,8 @@ def step():
                 if float(np.linalg.norm(sim.rat_pos - target_pos)) < 1.0:
                     sim.score += 1
                     sim.frustration = 0.0
-                    sim.dopamine = 1.0
+                    # Tonic dopamine slowly increases with repeated success; cap at 0.5
+                    sim.dopamine_tonic = clamp(sim.dopamine_tonic + 0.01, 0.0, 0.5)
                     sim.brain.astrocyte.glycogen = 1.0
                     reward_signal = 1.0
                     sim.targets[idx] = sim._spawn_single_target()
@@ -2738,10 +2764,13 @@ def step():
                         min_dist = dist
                         target_pos = t
 
-            # UPDATE UNPACKING: Add internal_dopamine at the end
-            soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, pain, touch, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine = sim.brain.process_votes(
+            tonic_target = clamp(0.25 + 0.5 * reward_signal - 0.2 * sim.frustration, 0.0, 1.0)
+            sim.dopamine_tonic = 0.95 * sim.dopamine_tonic + 0.05 * tonic_target
+
+            # UPDATE UNPACKING: Add internal dopamine (total + phasic) at the end
+            soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, pain, touch, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine, internal_dopamine_phasic = sim.brain.process_votes(
                 sim.frustration,
-                sim.dopamine,
+                sim.dopamine_tonic,
                 sim.rat_vel,
                 reward_signal,
                 danger_level,
@@ -2778,11 +2807,10 @@ def step():
             )
             sim.last_touch = touch # Update for next step
 
-            # --- NEW: VISUALIZE INTERNAL DOPAMINE ---
-            # Instead of simple decay, let the Basal Ganglia drive the UI bar.
-            # Smooth it slightly so it doesn't jitter too much
-            target_dopa = float(np.clip(internal_dopamine, 0.0, 1.0))
-            sim.dopamine = 0.8 * sim.dopamine + 0.2 * target_dopa
+            # --- DOPAMINE STATE UPDATE ---
+            sim.dopamine_phasic = float(internal_dopamine - sim.dopamine_tonic)
+            target_dopa = clamp(float(internal_dopamine), -1.0, 1.0)
+            sim.dopamine_ema = 0.8 * sim.dopamine_ema + 0.2 * target_dopa
 
             if panic_signal > 0.05 and panic_motor_bias > 0.0:
                 diff = sim.rat_pos - sim.predator.pos
@@ -2808,7 +2836,8 @@ def step():
             sim.rat_vel += tremor
 
             s = float(np.linalg.norm(sim.rat_vel))
-            max_speed = 0.3 + (sim.dopamine * 0.2)
+            total_dopamine = clamp(sim.dopamine_tonic + sim.dopamine_phasic, 0.0, 1.0)
+            max_speed = 0.3 + (total_dopamine * 0.2)
             if s > max_speed:
                 sim.rat_vel = (sim.rat_vel / (s + 1e-9)) * max_speed
 
@@ -2836,14 +2865,25 @@ def step():
             else:
                 sim.rat_pos[1] += sim.rat_vel[1] * dt_scale
 
-            # 3. Update Status
-            sim.last_collision = hit_x or hit_y
-            
-            if sim.last_collision:
-                sim.frustration = min(1.0, sim.frustration + 0.1)
-                sim.serotonin = max(0.1, sim.serotonin - 0.1)
-            else:
-                sim.frustration = max(0.0, sim.frustration - 0.005)
+        # 3. Update Status
+        sim.last_collision = hit_x or hit_y
+        
+        # --- TONIC DOPAMINE DYNAMICS ---
+        # Tonic dopamine slowly drifts toward baseline or depletes under stress
+        if sim.frustration < 0.1:
+            target_tonic = 0.2
+            recovery_rate = 0.001
+            sim.dopamine_tonic += (target_tonic - sim.dopamine_tonic) * recovery_rate
+        else:
+            stress_depletion = 0.0005 * sim.frustration
+            sim.dopamine_tonic -= stress_depletion
+        sim.dopamine_tonic = clamp(sim.dopamine_tonic, -0.3, 0.5)
+
+        if sim.last_collision:
+            sim.frustration = min(1.0, sim.frustration + 0.1)
+            sim.serotonin = max(0.1, sim.serotonin - 0.1)
+        else:
+            sim.frustration = max(0.0, sim.frustration - 0.005)
 
             # Pain increases frustration
             sim.frustration = min(1.0, sim.frustration + pain * 0.05)
@@ -2889,7 +2929,9 @@ def step():
                     "frustration": sim.frustration,
                     "score": sim.score,
                     "status": "AWAKE" if "TONIC" in sim.brain.trn.modes else "MICROSLEEP",
-                    "dopamine": sim.dopamine,
+                    "dopamine": sim.dopamine_ema,
+                    "dopamine_tonic": sim.dopamine_tonic,
+                    "dopamine_phasic": sim.dopamine_phasic,
                     "serotonin": sim.serotonin,
                     "norepinephrine": float(sim.brain.lc.tonic_ne),
                     "ne_phasic": float(sim.brain.lc.phasic_ne),
@@ -2992,7 +3034,9 @@ def reset():
     with sim_lock:
         sim.generate_map()
         sim.frustration = 0
-        sim.dopamine = 0.2
+        sim.dopamine_ema = 0.2
+        sim.dopamine_tonic = 0.2
+        sim.dopamine_phasic = 0.0
         sim.serotonin = 0.5
         sim.deaths = 0
         sim.generation = 1

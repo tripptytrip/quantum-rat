@@ -37,7 +37,7 @@ def run_steps(sim: app.SimulationState, steps: int):
         sim.rat_heading = float(np.arctan2(sim.rat_vel[1], sim.rat_vel[0]))
         sim.brain.process_votes(
             sim.frustration,
-            sim.dopamine,
+            sim.dopamine_tonic,
             sim.rat_vel,
             0,
             0,
