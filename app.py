@@ -1079,6 +1079,12 @@ class DendriticCluster:
         self.last_pp = {"pe_norm": 0.0, "pe_ema": 0.0, "yhat_next": np.zeros(6)}
         self.last_bf = {"precision_gain": 0.0, "mode": "BALANCED", "tonic_ach": 0.2}
 
+        # Working Memory bank (thalamic/PFC-gated slots)
+        self.wm_slots_n = 5
+        self.wm_dim = 16
+        self.wm_slots = [{"v": np.zeros(self.wm_dim), "strength": 0.0, "age": 0, "tag": 0} for _ in range(self.wm_slots_n)]
+        self.last_wm_bias = np.zeros(2)
+
         # STC variables
         self.synaptic_tags = np.zeros(3)
         self.prp_level = 0.0
@@ -1111,6 +1117,94 @@ class DendriticCluster:
         x = np.arange(size)
         bump = np.exp(-0.5 * np.minimum((x - position) ** 2, (size - np.abs(x - position)) ** 2) / (size / 10) ** 2)
         return bump / np.sum(bump)
+
+    def _reset_wm(self):
+        for slot in self.wm_slots:
+            slot["v"].fill(0.0)
+            slot["strength"] = 0.0
+            slot["age"] = 0
+            slot["tag"] = 0
+        self.last_wm_bias = np.zeros(2)
+
+    def _build_wm_candidate(
+        self,
+        rat_pos: np.ndarray,
+        rat_vel: np.ndarray,
+        head_direction: float,
+        target_pos: Optional[np.ndarray],
+        frustration: float,
+        dopamine_tonic: float,
+        danger_level: float,
+        panic: float,
+        novelty: float,
+        pain: float,
+        touch: float,
+        pheromones_len: int,
+        map_size: int,
+    ) -> np.ndarray:
+        vec = np.zeros(self.wm_dim, dtype=float)
+        ms = max(float(map_size), 1.0)
+        pos_norm = np.array([rat_pos[0] / ms, rat_pos[1] / ms], dtype=float)
+        vec[0:2] = pos_norm  # Where am I?
+
+        # Directional cues
+        vec[2] = float(np.sin(head_direction))
+        vec[3] = float(np.cos(head_direction))
+        vec[4:6] = np.array(rat_vel, dtype=float)
+
+        targ_dir = np.array([0.0, 0.0])
+        if target_pos is not None:
+            diff = np.array(target_pos, dtype=float) - np.array(rat_pos, dtype=float)
+            norm = float(np.linalg.norm(diff))
+            if norm > 1e-6:
+                targ_dir = diff / norm
+        vec[6:8] = targ_dir
+
+        vec[8] = float(frustration)
+        vec[9] = float(dopamine_tonic)
+        vec[10] = float(danger_level)
+        vec[11] = float(panic)
+        vec[12] = float(novelty)
+        vec[13] = float(pain)
+        vec[14] = float(touch)
+        vec[15] = float(min(1.0, pheromones_len / 50.0))
+        return vec
+
+    def _wm_decay_slots(self, dt: float):
+        decay = max(0.0, 1.0 - 0.02 * dt)
+        for slot in self.wm_slots:
+            slot["strength"] *= decay
+            slot["age"] += 1
+            if slot["strength"] < 1e-3:
+                slot["v"].fill(0.0)
+                slot["strength"] = 0.0
+                slot["tag"] = 0
+
+    def _wm_retrieve(self, candidate: np.ndarray):
+        best_idx = None
+        best_score = -1.0
+        cand_norm = float(np.linalg.norm(candidate)) + 1e-9
+        for idx, slot in enumerate(self.wm_slots):
+            if slot["strength"] <= 0.0:
+                continue
+            slot_norm = float(np.linalg.norm(slot["v"])) + 1e-9
+            sim = float(np.dot(candidate, slot["v"]) / (cand_norm * slot_norm))
+            sim *= (0.5 + 0.5 * slot["strength"])
+            if sim > best_score:
+                best_score = sim
+                best_idx = idx
+        return best_idx, best_score
+
+    def _wm_write(self, candidate: np.ndarray, drive: float):
+        if drive <= 0.35:
+            return
+        strengths = [slot["strength"] for slot in self.wm_slots]
+        target_idx = int(np.argmin(strengths))
+        slot = self.wm_slots[target_idx]
+        slot["v"] = candidate.copy()
+        slot["strength"] = clamp(drive, 0.0, 1.0)
+        slot["age"] = 0
+        slot["tag"] = 1 if drive > 0.8 else 0
 
     def update_hd_cells(self, angular_velocity):
         shift = -angular_velocity * self.hd_integration_weight * self.hd_cell_count / (2 * np.pi)
@@ -1486,6 +1580,33 @@ class DendriticCluster:
         k = clamp(float(sensory_blend), 0.0, 1.0)
         sensory_vec = ((1 - k) * sensory_vec_old_gated) + (k * sensory_vec_new_gated)
 
+        # --- WORKING MEMORY (slot bank) ---
+        self._wm_decay_slots(dt)
+        wm_candidate = self._build_wm_candidate(
+            rat_pos=rat_pos_arr,
+            rat_vel=np.array(rat_vel, dtype=float),
+            head_direction=head_direction,
+            target_pos=target_pos,
+            frustration=frustration,
+            dopamine_tonic=dopamine_tonic,
+            danger_level=danger_level,
+            panic=panic,
+            novelty=novelty,
+            pain=pain,
+            touch=touch,
+            pheromones_len=int(pheromones_len),
+            map_size=int(map_size),
+        )
+        wm_bias_vec = np.zeros(2)
+        wm_best_strength = 0.0
+        best_idx, best_score = self._wm_retrieve(wm_candidate)
+        if best_idx is not None and best_score > 0:
+            slot = self.wm_slots[best_idx]
+            wm_best_strength = slot["strength"]
+            wm_bias_vec = slot["v"][:2] * slot["strength"]
+            slot["strength"] = clamp(slot["strength"] + 0.05, 0.0, 1.0)
+        self.last_wm_bias = wm_bias_vec
+
         # --- INTERNAL PATH INTEGRATION (GRID/HD CAUSAL LOOP) ---
         if self.pos_hat is None and rat_pos is not None:
             self.pos_hat = np.array(rat_pos, dtype=float)
@@ -1540,6 +1661,8 @@ class DendriticCluster:
         # Apply the metabolic limit to working memory and LC stability (phasic NE wipes WM)
         wm_stability = float(lc_out.get("wm_stability", 1.0)) if lc_out else 1.0
         current_memory = self.pfc.memory * gain_memory * cortical_gain * wm_stability
+        if wm_best_strength > 0:
+            current_memory = np.clip(current_memory + (wm_bias_vec * 0.5), -3.0, 3.0)
 
         # --- PREDICTIVE PROCESSING UPDATE ---
         if config.get("enable_predictive_processing", 0.0) > 0.5:
@@ -1616,6 +1739,15 @@ class DendriticCluster:
             serotonin=serotonin,
             lc_habit_weight=lc_out.get("habit_weight", 1.0),
         )
+
+        # Working memory write/refresh logic (thalamic gating analogue)
+        write_drive = (
+            0.5 * float(novelty)
+            + 0.5 * abs(float(internal_dopamine_phasic))
+            + 0.3 * float(frustration)
+            + 0.7 * float(danger_level)
+        )
+        self._wm_write(wm_candidate, write_drive)
         
         # ... rest of the function remains the same ...
         activity_proxy = np.array([np.linalg.norm(sensory_vec), np.linalg.norm(current_memory), frustration])
@@ -1965,6 +2097,8 @@ class SimulationState:
         if hasattr(self.brain, "bf") and self.brain.bf is not None:
             self.brain.bf = BasalForebrain()
             self.brain.last_bf = {"precision_gain": 0.0, "mode": "BALANCED", "tonic_ach": 0.2}
+        if hasattr(self.brain, "_reset_wm"):
+            self.brain._reset_wm()
         
         if self.config.get("enable_place_cells", 0.0) > 0.5:
             if self.brain.place_cells is None or \
