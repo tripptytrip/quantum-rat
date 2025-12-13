@@ -613,6 +613,7 @@ class Thalamus:
               rng=None,
               atp_level: float = 1.0,  # <--- NEW PARAMETER
               attention_breadth: float = 1.0,
+              ach_precision: float = 0.0,
               ) -> Dict[str, Any]:
 
         # --- SEARCHLIGHT / ATTENTION BIAS ---
@@ -643,7 +644,7 @@ class Thalamus:
         base_suppression = effective_focus * 0.9
         breadth_factor = clamp(2.0 - attention_breadth, 0.5, 1.0)
         noise_suppression = base_suppression * breadth_factor
-        effective_noise = noise_level * (1.0 - noise_suppression)
+        effective_noise = (noise_level * (1.0 - noise_suppression)) / (1.0 + max(0.0, ach_precision))
 
         # Apply the (potentially suppressed) noise
         if effective_noise > 0.01 and rng is not None:
@@ -726,6 +727,33 @@ class PredictiveProcessing:
             "pe_vec": pe_vec,
             "yhat_next": yhat_next,
         }
+
+
+class BasalForebrain:
+    """
+    Simple cholinergic (ACh) model tracking expected uncertainty to modulate precision.
+    """
+    def __init__(self):
+        self.tonic_ach = 0.2
+        self.expected_uncertainty = 0.0
+        self.mode = "BALANCED"
+        self.last = {"precision_gain": 0.0, "mode": self.mode, "tonic_ach": self.tonic_ach}
+
+    def step(self, pe_scalar: float, arousal: float, dt: float = 0.05):
+        pe_scalar = float(clamp(pe_scalar, 0.0, 1.0))
+        arousal = float(clamp(arousal, 0.0, 2.0))
+        # expected uncertainty integrates PE variance (expected noise)
+        self.expected_uncertainty = ema(self.expected_uncertainty, pe_scalar ** 2, tau=1.5, dt=dt)
+
+        target_ach = 0.2 + 0.4 * clamp(arousal, 0.0, 1.5) - 0.5 * self.expected_uncertainty
+        target_ach = clamp(target_ach, 0.0, 1.0)
+        self.tonic_ach = ema(self.tonic_ach, target_ach, tau=1.0, dt=dt)
+
+        self.mode = "ENCODING" if self.tonic_ach > 0.55 else ("RECALL" if self.tonic_ach < 0.35 else "BALANCED")
+        precision_gain = clamp(self.tonic_ach * 2.0, 0.0, 2.0)
+
+        self.last = {"precision_gain": precision_gain, "mode": self.mode, "tonic_ach": self.tonic_ach}
+        return self.last
 
 
 class PFC_Stripe:
@@ -1033,6 +1061,7 @@ class DendriticCluster:
         self.soma = MicrotubuleSimulator2D("Executive Soma", length_points=32, rng=self.mt_rng)
         self.astrocyte = Astrocyte()
         self.trn = TRNGate()
+        self.bf = BasalForebrain()
         self.time_cells = TimeCellPopulation()
         self.lc = LocusCoeruleus()
 
@@ -1048,6 +1077,7 @@ class DendriticCluster:
         self.pp_state_dim = 12
         self.pp = PredictiveProcessing(rng=self.rng, state_dim=self.pp_state_dim, obs_dim=6)
         self.last_pp = {"pe_norm": 0.0, "pe_ema": 0.0, "yhat_next": np.zeros(6)}
+        self.last_bf = {"precision_gain": 0.0, "mode": "BALANCED", "tonic_ach": 0.2}
 
         # STC variables
         self.synaptic_tags = np.zeros(3)
@@ -1376,6 +1406,10 @@ class DendriticCluster:
                 surprise=surprise,
                 dt=dt,
             )
+        # --- BASAL FOREBRAIN (ACh) ---
+        pe_for_bf = float(self.last_pp.get("pe_ema", 0.0))
+        bf_out = self.bf.step(pe_scalar=pe_for_bf, arousal=arousal, dt=dt)
+        self.last_bf = bf_out
 
         if precomputed_trn_modes is not None:
             trn_modes = precomputed_trn_modes
@@ -1429,6 +1463,7 @@ class DendriticCluster:
                     # NEW ARG:
                     atp_level=self.astrocyte.neuronal_atp,
                     attention_breadth=lc_out.get("attention_breadth", 1.0),
+                    ach_precision=self.last_bf.get("precision_gain", 0.0),
                 )
                 sensory_vec_new_gated = thalamus_out["relay_vec"]
             else:
@@ -1528,7 +1563,8 @@ class DendriticCluster:
             wd = float(config.get("pp_weight_decay", 0.0005))
             pe_tau = float(config.get("pp_error_tau", 0.4))
             plasticity_gain = float(lc_out.get("plasticity_gain", 1.0)) if lc_out else 1.0
-            lr_eff = lr * plasticity_gain * atp_availability
+            ach_lr_gain = 1.0 + float(self.last_bf.get("precision_gain", 0.0)) * 0.5
+            lr_eff = lr * plasticity_gain * ach_lr_gain * atp_availability
 
             pp_out = self.pp.step(z_t=z_t, y_t=y_t, lr=lr_eff, weight_decay=wd, dt=dt, pe_tau=pe_tau)
             pe_norm = clamp(pp_out["pe_ema"] * float(config.get("pp_error_scale", 1.5)), 0.0, 1.0)
@@ -1547,6 +1583,10 @@ class DendriticCluster:
 
         plasticity_mod = (ext_lactate / 0.5) * (0.5 + 0.5 * w_str)
         plasticity_mod *= lc_out["plasticity_gain"]
+        if self.last_bf.get("mode", "BALANCED") == "ENCODING":
+            plasticity_mod *= 1.1
+        elif self.last_bf.get("mode", "BALANCED") == "RECALL":
+            plasticity_mod *= 0.9
 
         mt_plasticity_mult = 1.0
         if config.get("mt_causal", 0.0) > 0.5:
@@ -1922,6 +1962,9 @@ class SimulationState:
         if hasattr(self.brain, "pp") and self.brain.pp is not None:
             self.brain.pp.reset()
             self.brain.last_pp = {"pe_norm": 0.0, "pe_ema": 0.0, "yhat_next": np.zeros(6)}
+        if hasattr(self.brain, "bf") and self.brain.bf is not None:
+            self.brain.bf = BasalForebrain()
+            self.brain.last_bf = {"precision_gain": 0.0, "mode": "BALANCED", "tonic_ach": 0.2}
         
         if self.config.get("enable_place_cells", 0.0) > 0.5:
             if self.brain.place_cells is None or \
@@ -2907,7 +2950,7 @@ def step():
                     sim.dopamine_ema = 0.8 * sim.dopamine_ema + 0.2 * clamp(float(internal_dopamine), -1.0, 1.0)
 
                     # --- OFFLINE HIPPOCAMPAL REPLAY ---
-                    if float(sim.config.get("enable_replay", 0.0)) > 0.5:
+                    if float(sim.config.get("enable_replay", 0.0)) > 0.5 and sim.brain.last_bf.get("mode", "BALANCED") != "ENCODING":
                         sim.brain.replay.set_capacity(int(sim.config.get("replay_len", 240)))
                         sim.brain.offline_replay_and_consolidate(
                             steps=int(sim.config.get("replay_steps", 6)),
@@ -2960,18 +3003,21 @@ def step():
                                 "place_goal_strength": place_metrics["place_goal_strength"],
                                 "mt_theta_readouts": theta_r,
                                 "mt_soma_readouts": soma_r,
-                                "mt_plasticity_mult": mt_plasticity_mult,
-                                "mt_gate_thr": mt_gate_thr,
-                                "ne_uncertainty": float(sim.brain.lc.uncertainty),
-                                "ne_mode": sim.brain.lc.mode,
-                                "ne_habit_weight": float(sim.brain.lc.last.get("habit_weight", 1.0)),
-                                "ne_wm_stability": float(sim.brain.lc.last.get("wm_stability", 1.0)),
-                                "serotonin_patience": 0.5 + (sim.serotonin * 0.5),
-                                "serotonin_safety": 0.5 + (sim.serotonin * 1.0),
-                                "serotonin_compulsivity": 1.0 + (1.0 - sim.serotonin) * 0.8,
-                                "pp": {
-                                    "pe_norm": float(sim.brain.last_pp.get("pe_norm", 0.0)),
-                                    "pe_ema": float(sim.brain.last_pp.get("pe_ema", 0.0)),
+                    "mt_plasticity_mult": mt_plasticity_mult,
+                    "mt_gate_thr": mt_gate_thr,
+                    "ne_uncertainty": float(sim.brain.lc.uncertainty),
+                    "ne_mode": sim.brain.lc.mode,
+                    "ne_habit_weight": float(sim.brain.lc.last.get("habit_weight", 1.0)),
+                    "ne_wm_stability": float(sim.brain.lc.last.get("wm_stability", 1.0)),
+                    "serotonin_patience": 0.5 + (sim.serotonin * 0.5),
+                    "serotonin_safety": 0.5 + (sim.serotonin * 1.0),
+                    "serotonin_compulsivity": 1.0 + (1.0 - sim.serotonin) * 0.8,
+                    "ach_tonic": float(sim.brain.last_bf.get("tonic_ach", 0.0)),
+                    "ach_mode": sim.brain.last_bf.get("mode", "BALANCED"),
+                    "ach_precision_gain": float(sim.brain.last_bf.get("precision_gain", 0.0)),
+                    "pp": {
+                        "pe_norm": float(sim.brain.last_pp.get("pe_norm", 0.0)),
+                        "pe_ema": float(sim.brain.last_pp.get("pe_ema", 0.0)),
                                     "yhat_next": sim.brain.last_pp.get("yhat_next", np.zeros(6)).tolist(),
                                 },
                             },
@@ -3233,6 +3279,9 @@ def step():
                     "serotonin_patience": 0.5 + (sim.serotonin * 0.5),
                     "serotonin_safety": 0.5 + (sim.serotonin * 1.0),
                     "serotonin_compulsivity": 1.0 + (1.0 - sim.serotonin) * 0.8,
+                    "ach_tonic": float(sim.brain.last_bf.get("tonic_ach", 0.0)),
+                    "ach_mode": sim.brain.last_bf.get("mode", "BALANCED"),
+                    "ach_precision_gain": float(sim.brain.last_bf.get("precision_gain", 0.0)),
                     "norepinephrine": float(sim.brain.lc.tonic_ne),
                     "ne_phasic": float(sim.brain.lc.phasic_ne),
                     "panic": float(panic_signal),
