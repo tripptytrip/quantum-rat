@@ -2869,6 +2869,7 @@ def step():
 
                     # UPDATE UNPACKING: Add internal dopamine (total + phasic) at the end
                     cfg_ms = dict(sim.config)
+                    # Disable PP during microsleep to prevent replay/dream content from corrupting the world model
                     cfg_ms["enable_predictive_processing"] = 0.0
                     soma_density, d_theta, d_grid, final_decision, glycogen_level, atp_level, _, _, place_metrics, soma_r, theta_r, mt_plasticity_mult, mt_gate_thr, internal_dopamine, internal_dopamine_phasic = sim.brain.process_votes(
                         sim.frustration,
@@ -3449,6 +3450,23 @@ def config():
             sim.config["pp_explore_gain"] = clamp(float(payload["pp_explore_gain"]), 0.0, 5.0)
         if "pp_error_scale" in payload:
             sim.config["pp_error_scale"] = clamp(float(payload["pp_error_scale"]), 0.0, 10.0)
+        # Place cell knobs
+        if "enable_place_cells" in payload:
+            sim.config["enable_place_cells"] = clamp(float(payload["enable_place_cells"]), 0.0, 1.0)
+        if "place_n" in payload:
+            sim.config["place_n"] = int(np.clip(int(payload["place_n"]), 16, 1024))
+        if "place_sigma" in payload:
+            sim.config["place_sigma"] = clamp(float(payload["place_sigma"]), 0.5, 5.0)
+        if "place_lr" in payload:
+            sim.config["place_lr"] = clamp(float(payload["place_lr"]), 0.0, 0.5)
+        if "place_decay" in payload:
+            sim.config["place_decay"] = clamp(float(payload["place_decay"]), 0.0, 0.1)
+        if "place_goal_lr" in payload:
+            sim.config["place_goal_lr"] = clamp(float(payload["place_goal_lr"]), 0.0, 0.5)
+        if "place_nav_gain" in payload:
+            sim.config["place_nav_gain"] = clamp(float(payload["place_nav_gain"]), 0.0, 5.0)
+        if "goal_reward_threshold" in payload:
+            sim.config["goal_reward_threshold"] = clamp(float(payload["goal_reward_threshold"]), 0.0, 1.0)
 
         new_det = float(sim.config.get("deterministic", 0.0))
         new_seed = sim.config.get("seed")
