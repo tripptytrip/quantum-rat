@@ -136,6 +136,10 @@
 
                     <div class="bg-zinc-900 p-4 rounded border border-purple-900/30 space-y-3" data-tip="neuromodulation">
                         <h3 class="text-[10px] text-purple-400 uppercase tracking-widest mb-1 border-b border-purple-900/30 pb-1">Neuromodulation Core</h3>
+                        <div class="flex justify-between items-center bg-zinc-950 p-1.5 rounded border border-zinc-800 mb-2">
+                            <span class="text-[10px] text-zinc-500">LC STATE</span>
+                            <span id="lbl-lc-mode" class="text-xs font-bold text-cyan-400 tracking-wider">EXPLOIT</span>
+                        </div>
                         
                         <div>
                             <div class="flex justify-between text-xs mb-1">
@@ -159,6 +163,19 @@
                             </div>
                             <div class="h-2 bg-zinc-800 rounded overflow-hidden relative">
                                 <div id="bar-unc" class="h-full bg-cyan-600 w-0 transition-all duration-200"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-zinc-900 p-4 rounded border border-zinc-800 space-y-3 mt-2" data-tip="sensory_state">
+                        <h3 class="text-[10px] text-zinc-500 uppercase tracking-widest mb-1 border-b border-zinc-800 pb-1">Sensory Cortex</h3>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-indigo-400 font-semibold">VISUAL BOREDOM</span>
+                                <span id="val-boredom" class="text-indigo-300">0.00</span>
+                            </div>
+                            <div class="h-2 bg-zinc-800 rounded overflow-hidden relative">
+                                <div id="bar-boredom" class="h-full bg-indigo-500 w-0 transition-all duration-200"></div>
                             </div>
                         </div>
                     </div>
@@ -1157,6 +1174,34 @@
             });
 
             const stats = data.stats;
+            const lcModeEl = document.getElementById('lbl-lc-mode');
+            if (lcModeEl && stats.lc_mode) {
+                lcModeEl.innerText = stats.lc_mode;
+                if (stats.lc_mode === 'EXPLORE') {
+                    lcModeEl.className = "text-xs font-bold text-yellow-400 tracking-wider animate-pulse";
+                } else {
+                    lcModeEl.className = "text-xs font-bold text-cyan-400 tracking-wider";
+                }
+            }
+
+            const boredomVal = stats.boredom || 0;
+            const boredomEl = document.getElementById('val-boredom');
+            const boredomBar = document.getElementById('bar-boredom');
+
+            if (boredomEl && boredomBar) {
+                boredomEl.innerText = boredomVal.toFixed(2);
+                boredomBar.style.width = (boredomVal * 100) + '%';
+                
+                // Visual flair: turn bar red if bored
+                if (boredomVal > 0.8) {
+                    boredomBar.classList.add('bg-red-500');
+                    boredomBar.classList.remove('bg-indigo-500');
+                } else {
+                    boredomBar.classList.add('bg-indigo-500');
+                    boredomBar.classList.remove('bg-red-500');
+                }
+            }
+
             document.getElementById('val-frust').innerText = stats.frustration.toFixed(2);
             document.getElementById('bar-frust').style.width = (stats.frustration*100) + '%';
             if(stats && stats.dopamine !== undefined) {

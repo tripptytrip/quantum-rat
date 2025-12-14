@@ -19,6 +19,10 @@ from collections import deque
 from threading import Lock
 from typing import Any, Dict, List, Tuple, Optional
 from abc import ABC, abstractmethod
+from brain.orchestrator import BrainOrchestrator
+from brain.components.locus_coeruleus import LocusCoeruleusComponent
+from brain.components.basal_forebrain import BasalForebrainComponent
+from brain.components.sensory import VisionCortexComponent, SomatoCortexComponent
 
 class CoherenceField(ABC):
     """
@@ -1209,9 +1213,12 @@ class DendriticCluster:
         self.bf = BasalForebrain()
         self.time_cells = TimeCellPopulation()
         self.lc = LocusCoeruleus()
+        self.orchestrator = BrainOrchestrator(self.config, self.rng)
+        self.orchestrator.register(VisionCortexComponent())
+        self.orchestrator.register(SomatoCortexComponent())
+        self.orchestrator.register(LocusCoeruleusComponent())
+        self.orchestrator.register(BasalForebrainComponent())
 
-        self.vision_cortex = VisionCortex()
-        self.somato_cortex = SomatoCortex()
         self.thalamus = Thalamus()
         self.place_cells = None
 
@@ -1539,7 +1546,6 @@ class DendriticCluster:
         arousal: float = 0.0,
         amygdala_drive: float = 0.0,
         pfc_drive: float = 0.0,
-        precomputed_lc_out: Optional[Dict[str, float]] = None,
         target_pos: Optional[np.ndarray] = None,
         config: Dict[str, Any] = None,
         map_size: int = 40,
@@ -1596,60 +1602,90 @@ class DendriticCluster:
             self.time_cells.reset()
         _temporal_context = self.time_cells.step() 
 
-        # --- REFACTORED SENSORY PATHWAY ---
+        # --- ORCHESTRATOR SENSORY INJECTION ---
+        # We pass raw environmental data directly to the brain.
+        # The new Vision/Somato components will process this into 'novelty', 'pain', etc.
 
-        # 1. Compute raw old sensory vector (pre-gain)
-        sensory_vec_old_raw = np.array([0.0, 0.0])
-        closest_dist = 999.0
-        for ray in vision_data:
-            if ray["type"] == 3: # Target
-                if ray["dist"] < closest_dist:
-                    closest_dist = ray["dist"]
-                    sensory_vec_old_raw = np.array([np.cos(ray["angle"]), np.sin(ray["angle"])])
-        
-        norm_old = np.linalg.norm(sensory_vec_old_raw)
-        if norm_old > 0:
-            sensory_vec_old_raw /= norm_old
+        surprise_for_lc = 0.0
+        if config.get("enable_predictive_processing", 0.0) > 0.5:
+            surprise_for_lc = float(self.last_pp.get("pe_norm", 0.0)) * float(config.get("pp_surprise_gain", 1.0))
 
-        novelty = 0.0
-        sensory_vec_new_raw = None
-        vis_data = None
-        som_data = None
+        orchestrator_inputs = {
+            "vision_buffer": vision_data,
+            "whisker_hits": whisker_hits,
+            "collision": collision,
+            "surprise": surprise_for_lc,
+            "danger": float(danger_level),
+        }
 
-        # 2. Compute new sensory vector (raw; gating later)
-        pain = 0.0
-        touch = 0.0
+        # Run the Pipeline (Sensory -> Neuromodulators)
+        self.orchestrator.step(dt, orchestrator_inputs, float(1.0 if reward_signal > 0 else 0.0))
 
-        if enable_sensory_cortex:
-            vis_data = self.vision_cortex.encode(vision_data)
-            som_data = self.somato_cortex.encode(whisker_hits, collision)
-            sensory_vec_new_raw = vis_data["vis_vec"]
-            pain = som_data["pain"]
-            touch = som_data["touch"]
-            novelty = float(vis_data["features"][3])
-            
-            norm_new = np.linalg.norm(sensory_vec_new_raw)
-            if norm_new > 0:
-                sensory_vec_new_raw /= norm_new
-            vis_data["vis_vec"] = sensory_vec_new_raw
-        
-        if precomputed_lc_out is not None:
-            lc_out = precomputed_lc_out
-        else:
-            surprise = 0.0
-            if config.get("enable_predictive_processing", 0.0) > 0.5:
-                surprise = float(self.last_pp.get("pe_norm", 0.0)) * float(config.get("pp_surprise_gain", 1.0))
-            lc_out = self.lc.step(
-                novelty=novelty,
-                pain=pain,
-                reward=float(1.0 if reward_signal > 0 else 0.0),
-                danger=float(danger_level),
-                surprise=surprise,
-                dt=dt,
-            )
+        # --- EXTRACT OUTPUTS FOR LEGACY COMPATIBILITY ---
+        # We grab the processed data from the bus to feed legacy systems (like Thalamus)
+        bus_sensory = self.orchestrator.sensory
+
+        # 1. Reconstruct 'vis_data' structure for legacy Thalamus
+        vis_data = {
+            "vis_vec": bus_sensory.vision_vec,
+            "features": bus_sensory.vision_features
+        }
+
+        # 2. Reconstruct 'som_data' structure
+        som_data = {
+            "touch": bus_sensory.touch,
+            "pain": bus_sensory.pain
+        }
+
+        # 3. Variables used by LC shim (now redundant, but extracted for safety if needed elsewhere)
+        novelty_for_lc = float(bus_sensory.novelty)
+        pain_now = float(bus_sensory.pain)
+        touch_now = float(bus_sensory.touch)
+        novelty = novelty_for_lc
+
+        # Legacy vectors for downstream gating logic
+        sensory_vec_old_raw = np.array(bus_sensory.vision_vec, dtype=float)
+        sensory_vec_new_raw = np.array(bus_sensory.vision_vec, dtype=float) if enable_sensory_cortex else None
+        pain = pain_now
+        touch = touch_now
+
+        # 4. Neuromodulator outputs (as before)
+        nm = self.orchestrator.neuromod
+        lc_out = {
+            "arousal_boost": nm.arousal_boost,
+            "attention_gain": nm.attention_gain,
+            "explore_gain": nm.explore_gain,
+            "plasticity_gain": nm.plasticity_gain,
+            "habit_weight": nm.habit_weight,
+            "deliberation_weight": nm.deliberation_weight,
+            "wm_stability": nm.wm_stability,
+            "attention_breadth": nm.attention_breadth,
+        }
         # --- BASAL FOREBRAIN (ACh) ---
+        # 1. Pass Prediction Error to the Orchestrator
         pe_for_bf = float(self.last_pp.get("pe_ema", 0.0))
-        bf_out = self.bf.step(pe_scalar=pe_for_bf, arousal=arousal, dt=dt)
+        # We update the 'learning' bus directly here so BF can see it
+        self.orchestrator.learning.prediction_error = pe_for_bf
+
+        # 2. Update Cognitive Bus with Frustration (BF needs this for arousal calc)
+        self.orchestrator.cognitive.frustration = float(frustration)
+
+        # 3. Note: The Orchestrator.step() was already called above in the LC section.
+        # Ideally, we run the Orchestrator once per frame. 
+        # Since LC and BF are now both managed by it, they technically ran together earlier.
+        # However, to avoid breaking logic flow during migration, we can force a targeted update 
+        # OR trust that the LC-Shim step earlier executed the BF logic too (since it runs all registered components).
+
+        # TRUST THE ORCHESTRATOR: 
+        # Since we called self.orchestrator.step() in the LC block, BF has ALREADY run for this frame!
+        # We just need to extract the results from the bus to maintain legacy compatibility.
+
+        nm = self.orchestrator.neuromod
+        bf_out = {
+            "tonic_ach": nm.acetylcholine,
+            "precision_gain": nm.ach_precision_gain,
+            "mode": nm.ach_mode
+        }
         self.last_bf = bf_out
 
         if precomputed_trn_modes is not None:
@@ -3436,14 +3472,25 @@ def step():
             if float(sim.config.get("enable_predictive_processing", 0.0)) > 0.5:
                 surprise_for_lc = float(sim.brain.last_pp.get("pe_norm", 0.0)) * float(sim.config.get("pp_surprise_gain", 1.0))
 
-            lc_out = sim.brain.lc.step(
-                novelty=novelty_for_lc,
-                pain=pain_now,
-                reward=reward_signal,
-                danger=float(danger_level),
-                surprise=surprise_for_lc,
-                dt=dt,
-            )
+            raw_sensory_inputs = {
+                "novelty": novelty_for_lc,
+                "pain": pain_now,
+                "touch": float(sim.last_touch) if hasattr(sim, "last_touch") else 0.0,
+                "surprise": surprise_for_lc,
+                "danger": float(danger_level),
+            }
+            sim.brain.orchestrator.step(dt, raw_sensory_inputs, float(reward_signal))
+            nm = sim.brain.orchestrator.neuromod
+            lc_out = {
+                "arousal_boost": nm.arousal_boost,
+                "attention_gain": nm.attention_gain,
+                "explore_gain": nm.explore_gain,
+                "plasticity_gain": nm.plasticity_gain,
+                "habit_weight": nm.habit_weight,
+                "deliberation_weight": nm.deliberation_weight,
+                "wm_stability": nm.wm_stability,
+                "attention_breadth": nm.attention_breadth,
+            }
             
             phasic_arousal = clamp(sim.dopamine_phasic, 0.0, 1.0) * 0.5
             arousal = phasic_arousal + (sim.frustration * 0.5) + arousal_from_touch + lc_out["arousal_boost"] + (0.3 * panic_signal)
@@ -3499,7 +3546,6 @@ def step():
                         arousal=arousal,
                         amygdala_drive=amygdala_drive,
                         pfc_drive=pfc_drive,
-                        precomputed_lc_out=lc_out,
                         target_pos=target_pos,
                         config=cfg_ms,
                         map_size=sim.map_size,
@@ -3575,6 +3621,8 @@ def step():
                                 "ach_tonic": float(sim.brain.last_bf.get("tonic_ach", 0.0)),
                                 "ach_mode": sim.brain.last_bf.get("mode", "BALANCED"),
                                 "ach_precision_gain": float(sim.brain.last_bf.get("precision_gain", 0.0)),
+                                "boredom": float(sim.brain.orchestrator.last_diagnostics.get("vision_cortex", {}).get("boredom", 0.0)),
+                                "lc_mode": sim.brain.lc.mode,
                                 "map_size": sim.map_size,
                                 "trn_modes": list(getattr(sim.brain.trn, "modes", [])),
                                 "wm": {
@@ -3612,7 +3660,7 @@ def step():
                         sim.score += 1
                         sim.frustration = 0.0
                         # Tonic dopamine slowly increases with repeated success; cap at 0.5
-                        sim.dopamine_tonic = clamp(sim.dopamine_tonic + 0.01, 0.0, 0.5)
+                        sim.dopamine_tonic = clamp(sim.dopamine_tonic + 0.125, 0.0, 0.5)
                         sim.brain.astrocyte.glycogen = 1.0
                         reward_signal = 1.0
                         sim.targets[idx] = sim._spawn_single_target()
@@ -3684,7 +3732,6 @@ def step():
                 arousal=arousal,
                 amygdala_drive=amygdala_drive,
                 pfc_drive=pfc_drive,
-                precomputed_lc_out=lc_out,
                 target_pos=target_pos,
                 config=sim.config,
                 map_size=sim.map_size,
@@ -3860,6 +3907,8 @@ def step():
                     "ach_precision_gain": float(sim.brain.last_bf.get("precision_gain", 0.0)),
                     "norepinephrine": float(sim.brain.lc.tonic_ne),
                     "ne_phasic": float(sim.brain.lc.phasic_ne),
+                    "boredom": float(sim.brain.orchestrator.last_diagnostics.get("vision_cortex", {}).get("boredom", 0.0)),
+                    "lc_mode": sim.brain.lc.mode,
                     "panic": float(panic_signal),
                     "cortisol": float(sim.cortisol),
                     "mode": sim.behaviour_mode,
