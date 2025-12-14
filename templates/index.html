@@ -196,6 +196,10 @@
                                 <div class="h-2 bg-zinc-800 rounded overflow-hidden relative"><div id="bar-cort" class="h-full bg-gradient-to-r from-amber-600 to-amber-300 w-0 transition-all duration-200"></div></div>
                             </div>
                         </div>
+                        <div class="flex justify-between items-center text-[11px] pt-1">
+                            <span class="text-zinc-500 font-semibold">TRN GATE</span>
+                            <span id="val-trn" class="text-zinc-300 tracking-wider">SENS: ? | MEM: ?</span>
+                        </div>
                         <div class="pt-2 border-t border-zinc-800/50">
                             <div class="flex justify-between text-xs mb-1">
                                 <span class="text-purple-400 font-semibold">GLYCOGEN</span><span id="val-energy" class="text-purple-300">100%</span>
@@ -509,6 +513,7 @@
         cvsEditor.addEventListener('contextmenu', e => e.preventDefault());
     }
 
+    let initialMapLoaded = false;
     async function refreshMapList() {
         const sel = document.getElementById('saved-maps-select');
         if (!sel) return;
@@ -523,6 +528,12 @@
             if (m === defaultName) opt.selected = true;
             sel.appendChild(opt);
         });
+        // Auto-load default map on first refresh if available
+        if (!initialMapLoaded && (data.maps || []).includes(defaultName)) {
+            sel.value = defaultName;
+            initialMapLoaded = true;
+            await window.loadCustomMap();
+        }
     }
 
     window.saveCustomMap = async function() {
@@ -638,16 +649,34 @@
     let leftWhisker, rightWhisker;
     let visionGroup;
     const visionLines = [];
-    const MAP_SIZE = 40;
+    let MAP_SIZE = 40;
+    let ground, gridHelper;
+
+    function updateMapSize(size) {
+        MAP_SIZE = size;
+        if (ground) {
+            ground.geometry.dispose();
+            ground.geometry = new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE);
+            ground.position.set(MAP_SIZE / 2 - 0.5, 0, MAP_SIZE / 2 - 0.5);
+        }
+        if (gridHelper) {
+            gridHelper.geometry.dispose();
+            gridHelper.geometry = new THREE.GridHelper(MAP_SIZE, MAP_SIZE, 0x003333, 0x001111).geometry;
+            gridHelper.position.set(MAP_SIZE / 2 - 0.5, 0.01, MAP_SIZE / 2 - 0.5);
+        }
+        controls.target.set(MAP_SIZE / 2, 0, MAP_SIZE / 2);
+        mainCamera.position.set(MAP_SIZE / 2, 35, MAP_SIZE / 2 + 35);
+        controls.update();
+    }
 
     function initSceneObjects() {
-        const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE), matGround);
+        ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE), matGround);
         ground.rotation.x = -Math.PI / 2;
         ground.position.set(MAP_SIZE / 2 - 0.5, 0, MAP_SIZE / 2 - 0.5);
         ground.receiveShadow = true;
         scene.add(ground);
         
-        const gridHelper = new THREE.GridHelper(MAP_SIZE, MAP_SIZE, 0x003333, 0x001111);
+        gridHelper = new THREE.GridHelper(MAP_SIZE, MAP_SIZE, 0x003333, 0x001111);
         gridHelper.position.set(MAP_SIZE / 2 - 0.5, 0.01, MAP_SIZE / 2 - 0.5);
         scene.add(gridHelper);
 
@@ -1057,6 +1086,11 @@
             document.getElementById('val-frust').innerText = stats.frustration.toFixed(2);
             document.getElementById('bar-frust').style.width = (stats.frustration*100) + '%';
             if(stats && stats.dopamine !== undefined) {
+                // If map size changed (e.g., lab mode), update ground/grid and camera target
+                if (stats.map_size && stats.map_size !== MAP_SIZE) {
+                    updateMapSize(stats.map_size);
+                }
+
                 document.getElementById('val-dopa').innerText = stats.dopamine.toFixed(2);
                 document.getElementById('bar-dopa').style.width = (stats.dopamine*100) + '%';
                 
@@ -1090,6 +1124,18 @@
                 const cortVal = Math.max(0, stats.cortisol || 0);
                 document.getElementById('val-cort').innerText = cortVal.toFixed(2);
                 document.getElementById('bar-cort').style.width = (Math.min(cortVal, 2.0) * 50) + '%'; // cortisol can exceed 1
+
+                // TRN gating modes
+                const trn = stats.trn_modes || [];
+                const sensMode = trn[0] || '?';
+                const memMode = trn[1] || '?';
+                const trnEl = document.getElementById('val-trn');
+                if (trnEl) {
+                    trnEl.innerText = `SENS: ${sensMode} | MEM: ${memMode}`;
+                    trnEl.className = (sensMode === 'BURST' || memMode === 'BURST')
+                        ? "text-[11px] text-red-300 font-semibold tracking-wider"
+                        : "text-[11px] text-zinc-300 tracking-wider";
+                }
 
                 // --- ACETYLCHOLINE & UNCERTAINTY ---
                 if (stats.ach_tonic !== undefined) {

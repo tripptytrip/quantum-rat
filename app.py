@@ -1890,6 +1890,7 @@ class SimulationState:
     def __init__(self):
         self._init_rngs(seed=None)
         self.brain = DendriticCluster(rng=self.rng_brain, py_rng=self.py_rng, mt_rng=self.rng_microtub, load_genome=True)
+        self.default_map_name = "quarters"
 
         self.map_size = 40
         self.rat_pos = np.array([3.0, 3.0])
@@ -2002,6 +2003,7 @@ class SimulationState:
         self.last_touch = 0.0
 
         self.lab = ScientificTestBed(self)
+        self.lab_reward_flag = False
 
         if not (float(self.config.get("deterministic", 0.0)) > 0.5):
             if not os.path.exists("evolution_log.csv"):
@@ -2017,7 +2019,9 @@ class SimulationState:
                     pass
 
         self.occupancy_grid = np.zeros((self.map_size, self.map_size), dtype=int)
-        self.generate_map()
+        # Prefer loading a default custom map if present; otherwise generate fresh maze
+        if not self._apply_default_map(self.default_map_name):
+            self.generate_map()
         # Try to load a preferred default map if it exists
         self._apply_default_map("quarters")
 
@@ -2045,6 +2049,7 @@ class SimulationState:
         self.dopamine_phasic = 0.0
         self.pheromones = []
         self.phantom_trace = []
+        self.lab_reward_flag = False
 
         # Rebuild brain with current seeded streams
         self.brain = DendriticCluster(rng=self.rng_brain, py_rng=self.py_rng, mt_rng=self.rng_microtub, load_genome=False)
@@ -2057,8 +2062,8 @@ class SimulationState:
         if hasattr(self.brain, "place_cells") and self.brain.place_cells is not None:
             self.brain.place_cells.reset()
         # Regenerate map and reset position/velocity
-        self.generate_map()
-        self._apply_default_map("quarters")
+        if not self._apply_default_map(self.default_map_name):
+            self.generate_map()
         self.rat_pos = np.array([3.0, 3.0])
         self.rat_vel = np.array([0.0, 0.6])
         self.rat_heading = np.pi / 2
@@ -2209,9 +2214,9 @@ class SimulationState:
     def _apply_default_map(self, name: str):
         data = load_custom_maps_data()
         if name not in data:
-            return
+            return False
         grid = np.array(data[name], dtype=int)
-        self._apply_custom_grid(grid)
+        return self._apply_custom_grid(grid)
 
     def check_collision(self, pos):
         def is_wall(x, y):
@@ -2635,28 +2640,30 @@ class MorrisWaterMazeProtocol(LabProtocol):
         self.current_trial = 1
         self.trial_timer = 0
         self.finished = False
-        
-        # Fixed Target Location (North-East Quadrant)
-        # 40x40 Map. Center is 20,20. Target at 28, 28.
-        # Vision range is 15.0, so starting at 5,5 (dist ~32) makes it invisible.
-        self.target_pos = np.array([28.0, 28.0])
-        
-        # Start positions (Cardinal directions)
-        self.start_positions = [
-            np.array([5.0, 20.0]),  # West
-            np.array([20.0, 5.0]),  # South
-            np.array([35.0, 20.0]), # East
-            np.array([20.0, 35.0])  # North
-        ]
+        self.target_pos = np.array([20.0, 20.0])
+        self.start_positions = []
+        self.pending_next_trial = False
 
     def setup(self, sim):
         # 1. Clear Map
         sim.map_size = 40
-        sim.occupancy_grid.fill(0)
+        sim.occupancy_grid = np.zeros((sim.map_size, sim.map_size), dtype=int)
         sim.occupancy_grid[0, :] = 1
         sim.occupancy_grid[-1, :] = 1
         sim.occupancy_grid[:, 0] = 1
         sim.occupancy_grid[:, -1] = 1
+
+        # Set fixed target at true center (per request)
+        self.target_pos = np.array([20.0, 20.0])
+        # Start positions: four corners inset to avoid walls
+        pad = 3.0
+        ms = sim.map_size
+        self.start_positions = [
+            np.array([pad, pad]),  # SW
+            np.array([pad, ms - pad]),  # NW
+            np.array([ms - pad, pad]),  # SE
+            np.array([ms - pad, ms - pad]),  # NE
+        ]
 
         # 2. Reset Agents
         sim.predator.pos = np.array([-100.0, -100.0])
@@ -2668,9 +2675,16 @@ class MorrisWaterMazeProtocol(LabProtocol):
         sim.frustration = 0.0
         sim.dopamine_tonic = 0.5
         sim.dopamine_ema = 0.5
+        self.pending_next_trial = False
         
         # Reset Place Cells to ensure we are testing *new* learning
-        if sim.brain.place_cells:
+        if sim.config.get("enable_place_cells", 0.0) > 0.5:
+            sim.brain.place_cells = PlaceCellNetwork(
+                n_cells=int(sim.config.get("place_n", 256)),
+                sigma=float(sim.config.get("place_sigma", 1.5)),
+                map_size=sim.map_size,
+            )
+        elif sim.brain.place_cells:
             sim.brain.place_cells.reset()
             
         # Start Trial 1
@@ -2695,6 +2709,11 @@ class MorrisWaterMazeProtocol(LabProtocol):
     def step(self, sim, timer):
         if self.finished: return None
 
+        # If we deferred starting the next trial, do it now (after reward was processed)
+        if self.pending_next_trial and self.current_trial <= self.total_trials:
+            self.start_new_trial(sim)
+            self.pending_next_trial = False
+
         self.trial_timer += 1
         
         # Check Success
@@ -2708,6 +2727,9 @@ class MorrisWaterMazeProtocol(LabProtocol):
             result_time = self.trial_timer
             status = "SUCCESS" if success else "TIMEOUT"
             print(f"LAB: Trial {self.current_trial} {status} in {result_time} frames.")
+            if success:
+                # Flag reward; main loop will process before we teleport
+                sim.lab_reward_flag = True
             
             # --- CRITICAL: THE "NIGHT" PHASE ---
             # Trigger massive replay to consolidate the path
@@ -2721,11 +2743,11 @@ class MorrisWaterMazeProtocol(LabProtocol):
                         strength=0.2,
                         stress_learning_gain=1.0 # High gain because finding the platform is life-or-death
                     )
-            
+
             # Prepare next trial
             if self.current_trial < self.total_trials:
                 self.current_trial += 1
-                self.start_new_trial(sim)
+                self.pending_next_trial = True
             else:
                 self.finished = True
 
@@ -3187,6 +3209,8 @@ def step():
                                 "ach_tonic": float(sim.brain.last_bf.get("tonic_ach", 0.0)),
                                 "ach_mode": sim.brain.last_bf.get("mode", "BALANCED"),
                                 "ach_precision_gain": float(sim.brain.last_bf.get("precision_gain", 0.0)),
+                                "map_size": sim.map_size,
+                                "trn_modes": list(getattr(sim.brain.trn, "modes", [])),
                                 "wm": {
                                     "slots": len(sim.brain.wm_slots),
                                     "write_threshold": float(sim.brain.wm_write_threshold),
@@ -3209,18 +3233,24 @@ def step():
                     )
                 continue
 
-            # This reward signal calculation is now duplicated, but it's fine for now.
+            # Reward detection
             reward_signal = 0.0
-            for idx, target_pos in enumerate(sim.targets):
-                if float(np.linalg.norm(sim.rat_pos - target_pos)) < 1.0:
-                    sim.score += 1
-                    sim.frustration = 0.0
-                    # Tonic dopamine slowly increases with repeated success; cap at 0.5
-                    sim.dopamine_tonic = clamp(sim.dopamine_tonic + 0.01, 0.0, 0.5)
-                    sim.brain.astrocyte.glycogen = 1.0
+            if sim.lab.active:
+                # Lab protocols set a flag when success occurs; do not respawn targets here
+                if getattr(sim, "lab_reward_flag", False):
                     reward_signal = 1.0
-                    sim.targets[idx] = sim._spawn_single_target()
-                    break
+                    sim.lab_reward_flag = False
+            else:
+                for idx, target_pos in enumerate(sim.targets):
+                    if float(np.linalg.norm(sim.rat_pos - target_pos)) < 1.0:
+                        sim.score += 1
+                        sim.frustration = 0.0
+                        # Tonic dopamine slowly increases with repeated success; cap at 0.5
+                        sim.dopamine_tonic = clamp(sim.dopamine_tonic + 0.01, 0.0, 0.5)
+                        sim.brain.astrocyte.glycogen = 1.0
+                        reward_signal = 1.0
+                        sim.targets[idx] = sim._spawn_single_target()
+                        break
             
             # NOTE: head direction is now computed above the microsleep check
 
@@ -3471,10 +3501,12 @@ def step():
                     "atp": float(atp_level),
                     "deaths": sim.deaths,
                     "generation": sim.generation,
+                    "map_size": sim.map_size,
                     "ne_uncertainty": float(sim.brain.lc.uncertainty),
                     "ne_mode": sim.brain.lc.mode,
                     "ne_habit_weight": float(sim.brain.lc.last.get("habit_weight", 1.0)),
                     "ne_wm_stability": float(sim.brain.lc.last.get("wm_stability", 1.0)),
+                    "trn_modes": list(getattr(sim.brain.trn, "modes", [])),
                     "wm": {
                         "slots": len(sim.brain.wm_slots),
                         "write_threshold": float(sim.brain.wm_write_threshold),
