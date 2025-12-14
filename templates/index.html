@@ -299,12 +299,36 @@
                         <div class="absolute top-0 right-0 p-1"><span class="text-[10px] bg-blue-900 text-blue-200 px-1 rounded">RESEARCH MODE</span></div>
                         <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest font-bold">Laboratory Protocols</h3>
                         
-        <select id="lab-protocol-select" class="w-full bg-zinc-800 text-xs text-zinc-300 border border-zinc-700 rounded p-1 mb-2 outline-none">
-            <option value="open_field">1. Open Field Test (Anxiety/Entropy)</option>
-            <option value="t_maze">2. T-Maze Alternation (Working Memory)</option>
-            <option value="spatial_learning">3. Morris Water Maze (Spatial Consolidation)</option>
-            <option value="survival">4. Survival Arena (Predator Evasion)</option>
+        <select id="lab-protocol-select" onchange="toggleCustomBuilder(this.value)" class="w-full bg-zinc-800 text-xs text-zinc-300 border border-zinc-700 rounded p-1 mb-2 outline-none">
+            <option value="open_field">1. Open Field Test</option>
+            <option value="t_maze">2. T-Maze Alternation</option>
+            <option value="spatial_learning">3. Morris Water Maze</option>
+            <option value="survival">4. Survival Arena</option>
+            <option value="custom">★ Custom Protocol Builder</option>
         </select>
+        
+        <div id="custom-builder-ui" class="hidden mt-3 p-3 bg-black border border-zinc-800 rounded text-xs space-y-2">
+            <div class="flex gap-2">
+                <input id="cust-duration" type="number" placeholder="Duration (frames)" class="bg-zinc-800 p-1 w-1/2 rounded" value="1000">
+                <input id="cust-mapsize" type="number" placeholder="Map Size" class="bg-zinc-800 p-1 w-1/2 rounded" value="25">
+            </div>
+            
+            <div class="flex gap-2 items-center border p-1 border-zinc-800 rounded">
+                <input type="checkbox" id="cust-predator">
+                <label for="cust-predator" class="text-red-400">Spawn Predator</label>
+                <input id="cust-pred-speed" type="number" step="0.01" class="bg-zinc-900 w-16 p-1 ml-auto" value="0.24" placeholder="Spd">
+            </div>
+
+            <div class="border p-1 border-zinc-800 rounded">
+                <label class="text-green-400 mb-1 block">Targets (x,y)</label>
+                <input id="cust-targets" type="text" placeholder="10,10; 20,20" class="w-full bg-zinc-900 p-1 rounded">
+            </div>
+
+            <select id="cust-objective" class="w-full bg-zinc-800 p-1 rounded">
+                <option value="reach_target">Objective: Reach Target</option>
+                <option value="survive">Objective: Survival Time</option>
+            </select>
+        </div>
 
                         <div class="flex gap-2 mb-3">
                             <button onclick="toggleLab(true)" id="btn-start-lab" class="flex-1 btn bg-blue-900/20 text-blue-400 border-blue-800 hover:bg-blue-800/30 text-xs">Run Protocol</button>
@@ -829,9 +853,31 @@
 
     window.toggleLab = async function(start) {
         const endpoint = start ? '/lab/start' : '/lab/stop';
-        const protocol = document.getElementById('lab-protocol-select').value;
+        const protocolSelect = document.getElementById('lab-protocol-select');
+        const protocol = protocolSelect.value;
         
-        const body = start ? JSON.stringify({ test_id: protocol }) : "{}";
+        let bodyData = { test_id: protocol };
+
+        // If Custom, gather data from builder
+        if (start && protocol === 'custom') {
+            const targetsStr = document.getElementById('cust-targets').value;
+            // Parse "10,10; 20,20" string into array [[10,10], [20,20]]
+            const targets = targetsStr.split(';').map(s => s.trim().split(',').map(Number)).filter(a => a.length === 2);
+            
+            bodyData.custom_config = {
+                name: "User Custom Test",
+                duration: parseInt(document.getElementById('cust-duration').value),
+                map_size: parseInt(document.getElementById('cust-mapsize').value),
+                has_predator: document.getElementById('cust-predator').checked,
+                predator_speed: parseFloat(document.getElementById('cust-pred-speed').value),
+                targets: targets,
+                objective: document.getElementById('cust-objective').value,
+                // Default rat start to center-ish
+                rat_start: [2, 2] 
+            };
+        }
+        
+        const body = JSON.stringify(bodyData);
 
         // FIX: Capture the response to get the new wall layout
         const res = await fetch(endpoint, {
@@ -856,6 +902,13 @@
             isLabActive = false;
             resetRat(); // This puts the maze back
         }
+    }
+
+    // Helper to show/hide builder
+    window.toggleCustomBuilder = function(val) {
+        const builder = document.getElementById('custom-builder-ui');
+        if (val === 'custom') builder.classList.remove('hidden');
+        else builder.classList.add('hidden');
     }
 
     async function pollLabResults() {

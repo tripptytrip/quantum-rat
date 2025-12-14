@@ -2825,6 +2825,95 @@ class SurvivalProtocol(LabProtocol):
         return self.finished or timer >= self.max_frames
 
 
+class CustomProtocol(LabProtocol):
+    def __init__(self, config: Dict[str, Any]):
+        self.name = config.get("name", "Custom Protocol")
+        self.max_frames = int(config.get("duration", 1000))
+        self.config = config
+        self.finished = False
+        
+        # Mode determines success logic: 'reach_target', 'survive', or 'explore'
+        self.mode = config.get("objective", "reach_target") 
+
+    def setup(self, sim):
+        # 1. Map & Geometry
+        sim.map_size = int(self.config.get("map_size", 20))
+        sim.occupancy_grid = np.zeros((sim.map_size, sim.map_size), dtype=int)
+        
+        # Build Walls (Default: Box)
+        sim.occupancy_grid[0, :] = 1
+        sim.occupancy_grid[-1, :] = 1
+        sim.occupancy_grid[:, 0] = 1
+        sim.occupancy_grid[:, -1] = 1
+        
+        # Optional: Load specific map pattern if provided
+        # (You could expand this to accept a full grid array)
+        
+        # 2. Reset Agents
+        start_pos = self.config.get("rat_start", [2.0, 2.0])
+        sim.rat_pos = np.array([float(start_pos[0]), float(start_pos[1])])
+        sim.rat_vel = np.array([0.0, 0.0])
+        
+        # 3. Predator
+        if self.config.get("has_predator", False):
+            pred_start = self.config.get("predator_start", [sim.map_size-3.0, sim.map_size-3.0])
+            sim.predator.pos = np.array([float(pred_start[0]), float(pred_start[1])])
+            sim.predator.speed = float(self.config.get("predator_speed", 0.24))
+        else:
+            sim.predator.pos = np.array([-100.0, -100.0])
+
+        # 4. Targets / Food
+        sim.targets = []
+        target_locs = self.config.get("targets", [])
+        for t in target_locs:
+            sim.targets.append(np.array([float(t[0]), float(t[1])]))
+
+        # 5. Brain State Reset
+        sim.frustration = 0.0
+        sim.dopamine_tonic = 0.5
+        sim.brain.astrocyte.glycogen = 1.0
+        
+        print(f"LAB: Custom Protocol '{self.name}' Initiated.")
+
+    def step(self, sim, timer):
+        if self.finished: return None
+
+        # Logic varies by Objective Mode
+        success = False
+        failure = False
+        
+        # Mode: Reach Target (Navigation)
+        if self.mode == "reach_target":
+            for t in sim.targets:
+                if np.linalg.norm(sim.rat_pos - t) < 1.5:
+                    success = True
+                    sim.lab_reward_flag = True # Trigger reward in main loop
+        
+        # Mode: Survival (Predator Evasion)
+        elif self.mode == "survive":
+            dist = np.linalg.norm(sim.rat_pos - sim.predator.pos)
+            if dist < 1.0:
+                failure = True
+            elif timer >= self.max_frames:
+                success = True # Survived the whole time
+
+        if success or failure:
+            self.finished = True
+            status = "SUCCESS" if success else "FAILURE"
+            print(f"LAB: Custom Test Finished: {status}")
+            
+            return {
+                "frame": timer,
+                "success": 1 if success else 0,
+                "latency": timer
+            }
+
+        return None
+
+    def is_complete(self, sim, timer):
+        return self.finished or timer >= self.max_frames
+
+
 class ScientificTestBed:
     def __init__(self, simulation):
         self.sim = simulation
@@ -2841,19 +2930,24 @@ class ScientificTestBed:
             "survival": SurvivalProtocol,
         }
 
-    def start_experiment(self, protocol_name="open_field"):
-        if protocol_name not in self.protocols:
-            print(f"Unknown protocol: {protocol_name}")
-            return
-
+    def start_experiment(self, protocol_name="open_field", custom_config=None):
         print(f">>> STARTING LAB: {protocol_name.upper()} <<<")
         self.active = True
         self.data_log = []
         self.timer = 0
         
-        # Instantiate and run setup
-        ProtocolClass = self.protocols[protocol_name]
-        self.protocol = ProtocolClass()
+        if protocol_name == "custom" and custom_config:
+            # Instantiate the dynamic protocol
+            self.protocol = CustomProtocol(custom_config)
+        elif protocol_name in self.protocols:
+            # Instantiate standard hardcoded protocols
+            ProtocolClass = self.protocols[protocol_name]
+            self.protocol = ProtocolClass()
+        else:
+            print(f"Unknown protocol: {protocol_name}")
+            self.active = False
+            return
+
         self.protocol.setup(self.sim)
 
     def stop_experiment(self):
@@ -3539,11 +3633,15 @@ def step():
 def start_lab():
     with sim_lock:
         req = request.json or {}
-        test_type = req.get("test_id", "open_field") # Default to open field
-        sim.lab.start_experiment(test_type)
+        test_type = req.get("test_id", "open_field")
         
-        # --- FIX: Generate wall list for the new lab map ---
-        walls = []
+        # Extract custom config if present
+        custom_config = req.get("custom_config", None)
+        
+        sim.lab.start_experiment(test_type, custom_config)
+        
+        # ... existing wall generation code ...
+        walls = [] 
         for y in range(sim.map_size):
             for x in range(sim.map_size):
                 if sim.occupancy_grid[y, x] == 1:
