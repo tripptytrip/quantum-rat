@@ -66,6 +66,19 @@
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+
+        /* Model selector styling */
+        .model-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .model-full { background: #164e63; color: #22d3ee; }
+        .model-baseline { background: #713f12; color: #fbbf24; }
     </style>
 </head>
 <body class="h-screen flex flex-col p-4 overflow-hidden bg-zinc-950">
@@ -74,7 +87,10 @@
     <div class="flex justify-between items-center mb-4 border-b border-zinc-800 pb-2">
         <div>
             <h1 class="text-cyan-400 font-bold text-xl tracking-wider">QUANTUM RAT v3.5</h1>
-            <span class="text-xs text-cyan-700">Orch-OR Biomimetic Agent // Hebbian Plasticity</span>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-cyan-700">Orch-OR Biomimetic Agent // Hebbian Plasticity</span>
+                <span id="model-badge" class="model-badge model-full">FULL BRAIN</span>
+            </div>
         </div>
         <div class="flex gap-2 items-center">
             <button id="btn-turbo" class="btn text-yellow-400 border-yellow-900/50 hover:border-yellow-500">⚡ Hyper-Train</button>
@@ -171,11 +187,11 @@
                         <h3 class="text-[10px] text-zinc-500 uppercase tracking-widest mb-1 border-b border-zinc-800 pb-1">Sensory Cortex</h3>
                         <div>
                             <div class="flex justify-between text-xs mb-1">
-                                <span class="text-indigo-400 font-semibold">VISUAL BOREDOM</span>
-                                <span id="val-boredom" class="text-indigo-300">0.00</span>
+                                <span class="text-indigo-400 font-semibold">DRIVE PRESSURE</span>
+                                <span id="val-drive" class="text-indigo-300">0.00</span>
                             </div>
                             <div class="h-2 bg-zinc-800 rounded overflow-hidden relative">
-                                <div id="bar-boredom" class="h-full bg-indigo-500 w-0 transition-all duration-200"></div>
+                                <div id="bar-drive" class="h-full bg-indigo-500 w-0 transition-all duration-200"></div>
                             </div>
                         </div>
                     </div>
@@ -242,6 +258,21 @@
                 </div>
 
                 <div id="view-controls" class="hidden flex-col gap-4">
+                     <div class="bg-zinc-900 p-3 rounded border border-yellow-900/50" data-tip="rat_model">
+                        <h3 class="text-[10px] text-yellow-400 mb-2 uppercase tracking-widest border-b border-yellow-900/30 pb-1">Rat Model (Baseline Comparison)</h3>
+                        <select id="rat-model-select" class="w-full bg-zinc-800 text-sm text-zinc-300 border border-zinc-700 rounded p-2 outline-none focus:border-yellow-500"
+                                onchange="updateRatModel(this.value)">
+                            <option value="full_brain">Full Brain (Neuromodulated)</option>
+                            <option value="random_walk">Random Walk (Null Baseline)</option>
+                            <option value="braitenberg">Braitenberg (Reactive Only)</option>
+                            <option value="braitenberg_drive">Braitenberg + Drive</option>
+                            <option value="q_learning">Q-Learning (Tabular RL)</option>
+                        </select>
+                        <p id="model-description" class="text-[10px] text-zinc-500 mt-2">
+                            Full neuromodulatory architecture with LC, BF, dopamine, serotonin, and spatial systems.
+                        </p>
+                    </div>
+
                      <div class="bg-zinc-900 p-3 rounded border border-zinc-800">
                          <h3 class="text-[10px] text-zinc-500 mb-3 uppercase tracking-widest border-b border-zinc-800 pb-1">Simulation Config</h3>
                          
@@ -326,6 +357,11 @@
                      <div class="bg-zinc-900 p-4 rounded border border-blue-900/50 relative overflow-hidden" data-tip="learning_curve">
                         <div class="absolute top-0 right-0 p-1"><span class="text-[10px] bg-blue-900 text-blue-200 px-1 rounded">RESEARCH MODE</span></div>
                         <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest font-bold">Laboratory Protocols</h3>
+                        
+                        <div class="flex items-center gap-2 mb-2 p-2 bg-black rounded border border-zinc-800">
+                            <span class="text-[10px] text-zinc-500">TESTING MODEL:</span>
+                            <span id="lab-model-indicator" class="text-xs font-bold text-cyan-400">Full Brain</span>
+                        </div>
                         
         <select id="lab-protocol-select" onchange="toggleCustomBuilder(this.value)" class="w-full bg-zinc-800 text-xs text-zinc-300 border border-zinc-700 rounded p-1 mb-2 outline-none">
             <option value="open_field">1. Open Field Test</option>
@@ -418,6 +454,57 @@
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+    // --- MODEL DESCRIPTIONS ---
+    const MODEL_DESCRIPTIONS = {
+        "full_brain": "Full neuromodulatory architecture with LC, BF, dopamine, serotonin, and spatial systems.",
+        "random_walk": "Pure random movement with collision avoidance. The null baseline - everything should beat this.",
+        "braitenberg": "Stimulus-response only: attracted to targets, repelled by predators/walls. No memory or learning.",
+        "braitenberg_drive": "Braitenberg + time-since-reward restlessness. Tests if drive alone helps.",
+        "q_learning": "Tabular Q-learning with discretized state space. Standard RL baseline."
+    };
+
+    const MODEL_DISPLAY_NAMES = {
+        "full_brain": "Full Brain",
+        "random_walk": "Random Walk",
+        "braitenberg": "Braitenberg",
+        "braitenberg_drive": "Braitenberg + Drive",
+        "q_learning": "Q-Learning"
+    };
+
+    let currentModel = "full_brain";
+
+    // --- RAT MODEL SWITCHING ---
+    window.updateRatModel = async function(modelType) {
+        currentModel = modelType;
+        
+        // Update header badge
+        const badge = document.getElementById('model-badge');
+        if (modelType === 'full_brain') {
+            badge.className = 'model-badge model-full';
+            badge.innerText = 'FULL BRAIN';
+        } else {
+            badge.className = 'model-badge model-baseline';
+            badge.innerText = MODEL_DISPLAY_NAMES[modelType] || modelType.toUpperCase();
+        }
+        
+        // Update description
+        const desc = document.getElementById('model-description');
+        if (desc) desc.innerText = MODEL_DESCRIPTIONS[modelType] || '';
+        
+        // Update lab indicator
+        const labIndicator = document.getElementById('lab-model-indicator');
+        if (labIndicator) labIndicator.innerText = MODEL_DISPLAY_NAMES[modelType] || modelType;
+        
+        // Send to backend
+        await fetch('/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ rat_model: modelType })
+        });
+        
+        console.log(`Switched to model: ${modelType}`);
+    };
+
     // --- TOOLTIP TEXT DICTIONARY ---
     const TOOLTIP_TEXT = {
         "soma": {
@@ -491,7 +578,15 @@
         "neuromodulation": {
             title: "Cholinergic System (ACh)",
             text: "ACh tracks expected uncertainty to set precision. High ACh = Encoding mode (sharp input filtering). Low ACh = Recall mode (memory-driven, replay-friendly)."
-        }
+        },
+        "rat_model": {
+            title: "Rat Model Selection",
+            text: "Switch between the full neuromodulated brain and simpler baseline models for comparison testing."
+        },
+        "sensory_state": {
+            title: "Drive Pressure", 
+            text: "Time-since-reward signal from LC. Increases when the rat hasn't found food, driving exploration."
+        },
     };
 
     let running = true;
@@ -1030,7 +1125,9 @@
             
             dataPoints.forEach((pt, i) => {
                 const x = (pt.frame / maxFrames) * w;
-                const y = h - (Math.min(pt.dist, 20.0) / 20.0) * h;
+                const distVal = (pt.dist !== undefined) ? pt.dist : pt.dist_from_center;
+                const safeDist = Number.isFinite(distVal) ? distVal : 0;
+                const y = h - (Math.min(safeDist, 20.0) / 20.0) * h;
                 if (i === 0) ctxLearning.moveTo(x, y);
                 else ctxLearning.lineTo(x, y);
 
@@ -1042,7 +1139,8 @@
             ctxLearning.lineWidth = 2;
             ctxLearning.stroke();
 
-            const distText = `Dist: <span class="text-white">${lastPoint.dist.toFixed(1)}</span>`;
+            const lastDist = (lastPoint.dist !== undefined) ? lastPoint.dist : lastPoint.dist_from_center;
+            const distText = `Dist: <span class="text-white">${(Number.isFinite(lastDist) ? lastDist : 0).toFixed(1)}</span>`;
             const entropyText = lastPoint.entropy !== undefined ? `| Entropy: <span class="text-purple-400">${lastPoint.entropy.toFixed(2)}</span>` : '';
             document.getElementById('lab-status-text').innerHTML = distText + entropyText;
         }
@@ -1184,21 +1282,22 @@
                 }
             }
 
-            const boredomVal = stats.boredom || 0;
-            const boredomEl = document.getElementById('val-boredom');
-            const boredomBar = document.getElementById('bar-boredom');
+            // Drive pressure (replaces boredom)
+            const driveVal = stats.drive_pressure || 0;
+            const driveEl = document.getElementById('val-drive');
+            const driveBar = document.getElementById('bar-drive');
 
-            if (boredomEl && boredomBar) {
-                boredomEl.innerText = boredomVal.toFixed(2);
-                boredomBar.style.width = (boredomVal * 100) + '%';
+            if (driveEl && driveBar) {
+                driveEl.innerText = driveVal.toFixed(2);
+                driveBar.style.width = (driveVal * 100) + '%';
                 
-                // Visual flair: turn bar red if bored
-                if (boredomVal > 0.8) {
-                    boredomBar.classList.add('bg-red-500');
-                    boredomBar.classList.remove('bg-indigo-500');
+                // Visual flair: turn bar yellow/red as drive increases
+                if (driveVal > 0.7) {
+                    driveBar.classList.add('bg-yellow-500');
+                    driveBar.classList.remove('bg-indigo-500');
                 } else {
-                    boredomBar.classList.add('bg-indigo-500');
-                    boredomBar.classList.remove('bg-red-500');
+                    driveBar.classList.add('bg-indigo-500');
+                    driveBar.classList.remove('bg-yellow-500');
                 }
             }
 

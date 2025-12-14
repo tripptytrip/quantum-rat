@@ -43,6 +43,9 @@ class MotorCommand:
 class CognitiveState:
     frustration: float = 0.0
     position: np.ndarray = field(default_factory=lambda: np.zeros(2))
+    working_memory: np.ndarray = field(default_factory=lambda: np.zeros(2)) # The vector currently in "mind"
+    gate_signal: float = 0.0 # >0 means OPEN (update memory), <0 means LOCKED
+    drive_level: float = 0.0 # General arousal/drive state
 
 @dataclass
 class LearningSignals:

@@ -23,6 +23,7 @@ from brain.orchestrator import BrainOrchestrator
 from brain.components.locus_coeruleus import LocusCoeruleusComponent
 from brain.components.basal_forebrain import BasalForebrainComponent
 from brain.components.sensory import VisionCortexComponent, SomatoCortexComponent
+from brain.components.basal_ganglia import BasalGangliaComponent
 
 class CoherenceField(ABC):
     """
@@ -1218,6 +1219,7 @@ class DendriticCluster:
         self.orchestrator.register(SomatoCortexComponent())
         self.orchestrator.register(LocusCoeruleusComponent())
         self.orchestrator.register(BasalForebrainComponent())
+        self.orchestrator.register(BasalGangliaComponent(self.rng))
 
         self.thalamus = Thalamus()
         self.place_cells = None
@@ -1610,6 +1612,7 @@ class DendriticCluster:
         if config.get("enable_predictive_processing", 0.0) > 0.5:
             surprise_for_lc = float(self.last_pp.get("pe_norm", 0.0)) * float(config.get("pp_surprise_gain", 1.0))
 
+        # --- ORCHESTRATOR STEP (CENTRAL UPDATE) ---
         orchestrator_inputs = {
             "vision_buffer": vision_data,
             "whisker_hits": whisker_hits,
@@ -1618,75 +1621,65 @@ class DendriticCluster:
             "danger": float(danger_level),
         }
 
-        # Run the Pipeline (Sensory -> Neuromodulators)
+        # Inject cognitive state needed by downstream components
+        self.orchestrator.cognitive.working_memory = self.pfc.memory.copy()
+        self.orchestrator.cognitive.frustration = float(frustration)
+
+        # Run the Pipeline (Sensory -> Neuromodulators -> BG)
         self.orchestrator.step(dt, orchestrator_inputs, float(1.0 if reward_signal > 0 else 0.0))
 
-        # --- EXTRACT OUTPUTS FOR LEGACY COMPATIBILITY ---
-        # We grab the processed data from the bus to feed legacy systems (like Thalamus)
+        # --- EXTRACT BUS DATA (Make variables available for legacy logic) ---
         bus_sensory = self.orchestrator.sensory
-
-        # 1. Reconstruct 'vis_data' structure for legacy Thalamus
+        bus_neuromod = self.orchestrator.neuromod
+        
+        # 1. Sensory Primitives
+        novelty = float(bus_sensory.novelty)
+        pain = float(bus_sensory.pain)
+        touch = float(bus_sensory.touch)
+        
+        # 2. Legacy Data Structures (for Thalamus/TRN compatibility)
         vis_data = {
             "vis_vec": bus_sensory.vision_vec,
             "features": bus_sensory.vision_features
         }
-
-        # 2. Reconstruct 'som_data' structure
         som_data = {
-            "touch": bus_sensory.touch,
-            "pain": bus_sensory.pain
+            "touch": touch,
+            "pain": pain
         }
 
-        # 3. Variables used by LC shim (now redundant, but extracted for safety if needed elsewhere)
-        novelty_for_lc = float(bus_sensory.novelty)
-        pain_now = float(bus_sensory.pain)
-        touch_now = float(bus_sensory.touch)
-        novelty = novelty_for_lc
-
-        # Legacy vectors for downstream gating logic
-        sensory_vec_old_raw = np.array(bus_sensory.vision_vec, dtype=float)
-        sensory_vec_new_raw = np.array(bus_sensory.vision_vec, dtype=float) if enable_sensory_cortex else None
-        pain = pain_now
-        touch = touch_now
-
-        # 4. Neuromodulator outputs (as before)
-        nm = self.orchestrator.neuromod
+        # 3. Neuromodulator Output Dictionary (lc_out)
         lc_out = {
-            "arousal_boost": nm.arousal_boost,
-            "attention_gain": nm.attention_gain,
-            "explore_gain": nm.explore_gain,
-            "plasticity_gain": nm.plasticity_gain,
-            "habit_weight": nm.habit_weight,
-            "deliberation_weight": nm.deliberation_weight,
-            "wm_stability": nm.wm_stability,
-            "attention_breadth": nm.attention_breadth,
+            "arousal_boost": bus_neuromod.arousal_boost,
+            "attention_gain": bus_neuromod.attention_gain,
+            "explore_gain": bus_neuromod.explore_gain,
+            "plasticity_gain": bus_neuromod.plasticity_gain,
+            "habit_weight": bus_neuromod.habit_weight,
+            "deliberation_weight": bus_neuromod.deliberation_weight,
+            "wm_stability": bus_neuromod.wm_stability,
+            "attention_breadth": bus_neuromod.attention_breadth,
         }
-        # --- BASAL FOREBRAIN (ACh) ---
-        # 1. Pass Prediction Error to the Orchestrator
-        pe_for_bf = float(self.last_pp.get("pe_ema", 0.0))
-        # We update the 'learning' bus directly here so BF can see it
-        self.orchestrator.learning.prediction_error = pe_for_bf
 
-        # 2. Update Cognitive Bus with Frustration (BF needs this for arousal calc)
-        self.orchestrator.cognitive.frustration = float(frustration)
-
-        # 3. Note: The Orchestrator.step() was already called above in the LC section.
-        # Ideally, we run the Orchestrator once per frame. 
-        # Since LC and BF are now both managed by it, they technically ran together earlier.
-        # However, to avoid breaking logic flow during migration, we can force a targeted update 
-        # OR trust that the LC-Shim step earlier executed the BF logic too (since it runs all registered components).
-
-        # TRUST THE ORCHESTRATOR: 
-        # Since we called self.orchestrator.step() in the LC block, BF has ALREADY run for this frame!
-        # We just need to extract the results from the bus to maintain legacy compatibility.
-
-        nm = self.orchestrator.neuromod
-        bf_out = {
-            "tonic_ach": nm.acetylcholine,
-            "precision_gain": nm.ach_precision_gain,
-            "mode": nm.ach_mode
+        # 4. Basal Forebrain State
+        self.last_bf = {
+            "tonic_ach": bus_neuromod.acetylcholine,
+            "precision_gain": bus_neuromod.ach_precision_gain,
+            "mode": bus_neuromod.ach_mode
         }
-        self.last_bf = bf_out
+        
+        # 5. Define Vectors for downstream blending
+        sensory_vec_old_raw = np.array(bus_sensory.vision_vec, dtype=float)
+        sensory_vec_new_raw = np.array(bus_sensory.vision_vec, dtype=float)
+
+        # --- EXTRACT BG OUTPUTS ---
+        bg_heading = self.orchestrator.motor.heading_vec
+        bg_gate = self.orchestrator.cognitive.gate_signal
+        internal_dopamine_phasic = self.orchestrator.neuromod.dopamine_phasic
+
+        # Overwrite legacy outputs
+        final_vector = bg_heading
+        gate_signal = bg_gate
+        internal_dopamine_total = dopamine_tonic + internal_dopamine_phasic
+        mt_gate_thr = 0.5  # placeholder for compatibility
 
         if precomputed_trn_modes is not None:
             trn_modes = precomputed_trn_modes
@@ -1902,26 +1895,6 @@ class DendriticCluster:
             mt_plasticity_mult = mt_plast
 
         plasticity_mod = float(np.clip(plasticity_mod, 0.0, 5.0))
-
-        # --- LOGIC UPDATE: Pass memory_gain ---
-        mt_causal_flag = float(config.get("mt_causal", 0.0)) > 0.5
-        mt_gate_mod = float(config.get("mt_mod_gate", 0.2))
-        final_vector, gate_signal, internal_dopamine_total, mt_gate_thr, internal_dopamine_phasic = self.basal_ganglia.select_action_and_gate(
-            sensory_vec,
-            current_memory,
-            frustration,
-            reward_signal,
-            plasticity_mod,
-            memory_gain=memory_gain,
-            theta_readouts=theta_r_prev,
-            mt_causal=mt_causal_flag,
-            mt_mod_gate=mt_gate_mod,
-            # NEW ARG:
-            exploration_bias=bg_exploration,
-            baseline_dopamine=dopamine_tonic,
-            serotonin=serotonin,
-            lc_habit_weight=lc_out.get("habit_weight", 1.0),
-        )
 
         # Working memory write/refresh logic (thalamic gating analogue)
         write_drive = (
@@ -2630,7 +2603,8 @@ class OpenFieldProtocol(LabProtocol):
     def setup(self, sim):
         # 1. Clear Map (Empty Box)
         sim.map_size = 40
-        sim.occupancy_grid.fill(0)
+        # Rebuild grid in case a prior test used a different size
+        sim.occupancy_grid = np.zeros((sim.map_size, sim.map_size), dtype=int)
         # Add outer walls
         sim.occupancy_grid[0, :] = 1
         sim.occupancy_grid[-1, :] = 1
@@ -2664,7 +2638,10 @@ class OpenFieldProtocol(LabProtocol):
         return {
             "frame": timer,
             "in_center": 1 if in_center else 0,
+            # Keep both keys: existing "dist_from_center" plus generic "dist"
+            # so the plotting code can handle all protocols uniformly.
             "dist_from_center": float(dist_from_center),
+            "dist": float(dist_from_center),
             "speed": float(speed),
             "entropy": float(sim.brain.mt_theta.readout["entropy"])
         }
