@@ -99,5 +99,8 @@ class LocusCoeruleusComponent(BrainComponent):
             "tonic_ne": self.tonic_ne,
             "phasic_ne": self.phasic_ne,
             "uncertainty": self.uncertainty,
-            "mode": self.mode
+            "mode": self.mode,
+            # Pass through the last calculated outputs for UI visualization
+            "habit_weight": 1.2 - (self.tonic_ne * 1.0), # Approximate reconstruction or store in self.last
+            "wm_stability": 1.0 if self.phasic_ne < 0.5 else (1.0 - (self.phasic_ne - 0.5) * 1.4)
         }

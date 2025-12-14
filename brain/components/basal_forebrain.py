@@ -64,6 +64,6 @@ class BasalForebrainComponent(BrainComponent):
         return {
             "tonic_ach": self.tonic_ach,
             "mode": self.mode,
-            "precision_gain": self.tonic_ach * 2.0, # Approximate for consistency
+            "precision_gain": self.tonic_ach * 2.0,
             "expected_uncertainty": self.expected_uncertainty
         }

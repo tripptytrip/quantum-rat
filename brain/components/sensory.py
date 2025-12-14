@@ -127,5 +127,6 @@ class VisionCortexComponent(BrainComponent):
     def get_diagnostics(self) -> Dict[str, Any]:
         return {
             "boredom": float(self.boredom),
-            "visual_delta": float(np.linalg.norm(self.last_vis_vec)) # rough proxy for movement
+            "visual_delta": float(np.linalg.norm(self.last_vis_vec)), # rough proxy for movement
+            "novelty": float(self.ema_salience) # useful debug
         }
