@@ -243,6 +243,17 @@
                         </div>
                     </div>
 
+                    <div class="bg-zinc-900 p-3 rounded border border-zinc-800 mt-2">
+                        <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest">Architecture</h3>
+                        
+                        <label class="text-xs text-zinc-400 block mb-1">Microtubule Model</label>
+                        <select class="w-full bg-zinc-800 text-xs text-zinc-300 border border-zinc-700 rounded p-1 outline-none"
+                                onchange="updateConfig('coherence_field_type', this.value)">
+                            <option value="microtubule">Quantum (Orch-OR)</option>
+                            <option value="noise">Null (OU Noise)</option>
+                        </select>
+                    </div>
+
                      <div class="bg-zinc-900 p-3 rounded border border-zinc-800">
                         <h3 class="text-[10px] text-zinc-500 mb-3 uppercase tracking-widest border-b border-zinc-800 pb-1">Component Ablation</h3>
                         
@@ -875,6 +886,10 @@
                 // Default rat start to center-ish
                 rat_start: [2, 2] 
             };
+            
+            if (window.editorGrid) {
+                bodyData.custom_config.grid = window.editorGrid;
+            }
         }
         
         const body = JSON.stringify(bodyData);
@@ -942,8 +957,10 @@
         const h = cvsLearning.height;
         ctxLearning.clearRect(0, 0, w, h);
         
-        // Check data type: Survival (alive), Discrete (latency), or Continuous (open field)
-        if (dataPoints[0].alive !== undefined) {
+        // Check data type: Survival (alive), Discrete (latency), or Continuous (open field / custom)
+        const firstPoint = dataPoints[0];
+        
+        if (firstPoint.alive !== undefined) { // Survival Protocol
             ctxLearning.strokeStyle = '#4ade80';
             ctxLearning.lineWidth = 2;
             ctxLearning.beginPath();
@@ -964,18 +981,11 @@
             return;
         }
 
-        // Continuous (Open Field) vs Discrete (Water Maze)
-        const isDiscrete = dataPoints[0].latency !== undefined;
-
-        ctxLearning.strokeStyle = '#4ade80';
-        ctxLearning.lineWidth = 2;
-        ctxLearning.beginPath();
-
-        if (isDiscrete) {
-            // --- DISCRETE PLOT (Trials) ---
+        if (firstPoint.latency !== undefined) { // Discrete trial-based protocols (T-Maze, Water Maze)
             const maxTrials = 10;
             const maxLatency = 1500;
             
+            ctxLearning.beginPath();
             dataPoints.forEach((pt, i) => {
                 const x = (i / (maxTrials - 1)) * (w - 20) + 10;
                 const y = h - ((pt.latency / maxLatency) * h);
@@ -983,31 +993,42 @@
                 if (i === 0) ctxLearning.moveTo(x, y);
                 else ctxLearning.lineTo(x, y);
                 
-                // Draw dot
                 ctxLearning.fillStyle = pt.success ? '#4ade80' : '#ef4444';
                 ctxLearning.fillRect(x-3, y-3, 6, 6);
             });
+            ctxLearning.strokeStyle = '#4ade80';
+            ctxLearning.lineWidth = 2;
+            ctxLearning.stroke();
             
-            // Text Update
             const last = dataPoints[dataPoints.length-1];
             document.getElementById('lab-status-text').innerHTML = 
                 `Trial: ${dataPoints.length}/10 | Latency: <span class="text-white">${last.latency}</span> frames`;
 
-        } else {
-            // --- CONTINUOUS PLOT (Open Field) ---
-            const maxFrames = 1000;
+        } else { // Continuous protocols (Open Field, Custom)
+            const lastPoint = dataPoints[dataPoints.length-1];
+            const maxFrames = lastPoint.duration || 1000; // Use duration from config if available
+            
+            ctxLearning.beginPath();
+            let successState = 0; // 0=running, 1=success, -1=fail
+            
             dataPoints.forEach((pt, i) => {
                 const x = (pt.frame / maxFrames) * w;
-                const y = h - ((pt.dist_from_center / 20.0) * h);
+                const y = h - (Math.min(pt.dist, 20.0) / 20.0) * h;
                 if (i === 0) ctxLearning.moveTo(x, y);
                 else ctxLearning.lineTo(x, y);
+
+                if (pt.success === 1) successState = 1;
+                else if (pt.success === 0 && pt.latency) successState = -1; // Finished without success
             });
-            const last = dataPoints[dataPoints.length-1];
-            document.getElementById('lab-status-text').innerHTML = 
-                `Dist from Center: <span class="text-white">${last.dist_from_center.toFixed(1)}</span> | Entropy: <span class="text-purple-400">${last.entropy.toFixed(2)}</span>`;
+
+            ctxLearning.strokeStyle = successState === 1 ? '#4ade80' : (successState === -1 ? '#ef4444' : '#60a5fa');
+            ctxLearning.lineWidth = 2;
+            ctxLearning.stroke();
+
+            const distText = `Dist: <span class="text-white">${lastPoint.dist.toFixed(1)}</span>`;
+            const entropyText = lastPoint.entropy !== undefined ? `| Entropy: <span class="text-purple-400">${lastPoint.entropy.toFixed(2)}</span>` : '';
+            document.getElementById('lab-status-text').innerHTML = distText + entropyText;
         }
-        
-        ctxLearning.stroke();
     }
 
     // --- LOOP ---

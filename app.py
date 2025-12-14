@@ -18,6 +18,47 @@ import math
 from collections import deque
 from threading import Lock
 from typing import Any, Dict, List, Tuple, Optional
+from abc import ABC, abstractmethod
+
+class CoherenceField(ABC):
+    """
+    Interface for any continuous field dynamics (Quantum or Classical).
+    Required for ablation studies.
+    """
+    
+    @abstractmethod
+    def step(self, pump_map: np.ndarray, **kwargs) -> Tuple[np.ndarray, bool]:
+        """
+        Advance physics by one step.
+        Args:
+            pump_map: 2D array of input energy.
+        Returns:
+            (viz_density, collapse_event): 
+                - viz_density: 2D array for UI heatmap.
+                - collapse_event: Boolean indicating state reset/decision.
+        """
+        pass
+
+    @abstractmethod
+    def get_readouts(self) -> Dict[str, float]:
+        """Return metrics: coherence, entropy, contrast, collapse_ema."""
+        pass
+    
+    @abstractmethod
+    def reset_wavefunction(self):
+        """Reset internal state to baseline."""
+        pass
+
+    @property
+    @abstractmethod
+    def avg_coherence(self) -> float:
+        """Expose current coherence for downstream gating."""
+        pass
+
+    @abstractmethod
+    def get_fingerprint_bytes(self) -> bytes:
+        """Return bytes representing current state for deterministic hashing."""
+        pass
 
 app = Flask(__name__)
 
@@ -84,7 +125,7 @@ def maybe_downsample(arr: np.ndarray, ds: int) -> np.ndarray:
     return arr
 
 
-class MicrotubuleSimulator2D:
+class MicrotubuleSimulator2D(CoherenceField):
     def __init__(self, label, length_points=32, seam_shift=3, dt=0.01, neighbor_mode: str = "legacy", rng=None):
         if rng is None:
             raise ValueError("MicrotubuleSimulator2D requires rng injection")
@@ -93,7 +134,7 @@ class MicrotubuleSimulator2D:
         self.Nx = 13
         self.Ny = length_points
         self.dt = dt
-        self.seam_shift = seam_shift  # The "3-start helix" shift
+        self.seam_shift = seam_shift
         self.neighbor_mode = neighbor_mode
         self.rng = rng
         self.deterministic_mode = False
@@ -109,10 +150,18 @@ class MicrotubuleSimulator2D:
 
         # Phases: "ISOLATION" (Classical), "SUPERPOSITION" (Quantum), "COLLAPSE"
         self.phase = "ISOLATION"
-        self.avg_coherence = 0.0 # New
+        
+        # --- FIX 1: Initialize internal variable ---
+        self._avg_coherence = 0.0 
+        
         self.readout = {"coherence":0.0, "entropy":0.0, "contrast":0.0, "collapse_ema":0.0}
         self.collapse_ema = 0.0
         self.reset_wavefunction()
+
+    # --- FIX 2: Add the required property ---
+    @property
+    def avg_coherence(self) -> float:
+        return self._avg_coherence
 
     def reset_wavefunction(self):
         noise_r = 0.1 * (self.rng.random((self.Ny, self.Nx)) - 0.5)
@@ -157,7 +206,7 @@ class MicrotubuleSimulator2D:
 
         return temp_grid
 
-    def step(self, pump_map: np.ndarray, lfp_signal: float = 0.0, anesthetic_conc: float = 0.0):
+    def step(self, pump_map: np.ndarray, lfp_signal: float = 0.0, anesthetic_conc: float = 0.0) -> Tuple[np.ndarray, bool]:
         anesthetic_conc = clamp(float(anesthetic_conc), 0.0, 1.0)
 
         # Anesthesia dampens input sensitivity
@@ -241,7 +290,7 @@ class MicrotubuleSimulator2D:
                 self.accumulated_Eg = 0.0
                 self.phase = "ISOLATION"
 
-        self.avg_coherence = avg_coherence # update the attribute
+        self._avg_coherence = avg_coherence
         self.collapse_ema = ema(self.collapse_ema, 1.0 if collapse_event else 0.0, tau=2.0, dt=self.dt)
         self.readout = self.get_readouts()
         
@@ -260,7 +309,7 @@ class MicrotubuleSimulator2D:
         density = np.abs(self.psi) ** 2
         
         # Coherence
-        coherence = self.avg_coherence
+        coherence = self._avg_coherence
 
         # Entropy
         p = density / (np.sum(density) + 1e-9)
@@ -276,6 +325,84 @@ class MicrotubuleSimulator2D:
             "collapse_ema": self.collapse_ema
         }
 
+    def get_fingerprint_bytes(self) -> bytes:
+        return self.psi.astype(np.complex128).tobytes()
+
+
+class OUNoiseField(CoherenceField):
+    """
+    Ornstein-Uhlenbeck Process.
+    Ablation Control: Simulates 'activity' without quantum coherence or computation.
+    """
+    def __init__(self, label, length_points=32, dt=0.05, rng=None, **kwargs):
+        self.label = label
+        self.Ny = length_points
+        self.Nx = 13
+        self.dt = dt
+        self.rng = rng
+        
+        # State is just scalar activity, not complex wavefunction
+        self.state = np.zeros((self.Ny, self.Nx), dtype=float)
+        self.tau = 0.5    # Time constant
+        self.sigma = 0.2  # Noise volatility
+        self.readout = {"coherence": 0.0, "entropy": 0.0, "contrast": 0.0, "collapse_ema": 0.0}
+        self._avg_coherence = 0.0
+
+    def step(self, pump_map: np.ndarray, lfp_signal: float = 0.0, anesthetic_conc: float = 0.0) -> Tuple[np.ndarray, bool]:
+        # Ornstein-Uhlenbeck update: dx = -theta*x*dt + sigma*dW
+        
+        current_sigma = self.sigma
+        if anesthetic_conc > 0.5:
+            current_sigma *= 0.1 # 90% reduction
+
+        noise = self.rng.normal(0.0, 1.0, self.state.shape)
+        
+        # Pump map acts as external drive (forcing function)
+        drive = pump_map * 0.5
+        
+        dx = (-(self.state - drive) / self.tau) * self.dt + (current_sigma * np.sqrt(self.dt) * noise)
+        self.state += dx
+        
+        # Clamp to reasonable range [0, 1] for biology-like firing
+        self.state = np.clip(self.state, 0.0, 2.0)
+        
+        # Fake "Collapse": Random bursts that reset state
+        # Matched to occur roughly as often as Orch-OR events (~1-2Hz)
+        collapse = False
+        if self.rng.random() < (0.02 * np.mean(pump_map)):
+            self.state.fill(0.0)
+            collapse = True
+        
+        # Compute metrics expected by brain
+        density = self.state # In this model, state IS density
+        self._avg_coherence = float(np.mean(density)) 
+        
+        # Entropy of the noise distribution
+        p = density / (np.sum(density) + 1e-9)
+        entropy = -np.sum(p * np.log(p + 1e-9))
+        
+        self.readout = {
+            "coherence": self._avg_coherence,
+            "entropy": entropy,
+            "contrast": float(np.var(density)),
+            "collapse_ema": 0.0 # Not tracked in null model
+        }
+        
+        # Return matched format: (Density Map for UI, Collapse Bool)
+        return self.state * 128.0, collapse
+
+    def get_readouts(self) -> Dict[str, float]:
+        return self.readout
+
+    def reset_wavefunction(self):
+        self.state.fill(0.0)
+
+    @property
+    def avg_coherence(self) -> float:
+        return self._avg_coherence
+
+    def get_fingerprint_bytes(self) -> bytes:
+        return self.state.astype(np.float64).tobytes()
 
 
 class Astrocyte:
@@ -1045,7 +1172,7 @@ class PlaceCellNetwork:
 
 
 class DendriticCluster:
-    def __init__(self, rng=None, py_rng=None, mt_rng=None, load_genome: bool = True):
+    def __init__(self, config: Dict[str, Any] = None, rng=None, py_rng=None, mt_rng=None, load_genome: bool = True, preserve_weights: Dict = None):
         if rng is None:
             raise ValueError("DendriticCluster requires rng injection")
         if py_rng is None:
@@ -1055,10 +1182,28 @@ class DendriticCluster:
         self.rng = rng
         self.py_rng = py_rng
         self.mt_rng = mt_rng
+        self.config = config or {}
+        
+        # --- COMPONENT FACTORY ---
+        mt_type = self.config.get("coherence_field_type", "microtubule")
+        
+        if mt_type == "noise":
+            FieldClass = OUNoiseField
+            print("BRAIN: Using Null Hypothesis (OUNoiseField)")
+        else:
+            FieldClass = MicrotubuleSimulator2D
+            print("BRAIN: Using Standard Model (MicrotubuleSimulator2D)")
+
+        # Instantiate Soma
+        self.soma = FieldClass("Executive Soma", length_points=32, rng=self.mt_rng)
+        
+        # Instantiate Theta (can use same type or be distinct)
+        self.mt_theta = FieldClass("Theta Memory", length_points=32, rng=self.mt_rng)
+        if hasattr(self.mt_theta, "H_BAR"): self.mt_theta.H_BAR = 6.0 # Only for quantum
+
         self.pfc = PFC_Stripe(0)
         self.basal_ganglia = BasalGanglia(rng=self.rng)
 
-        self.soma = MicrotubuleSimulator2D("Executive Soma", length_points=32, rng=self.mt_rng)
         self.astrocyte = Astrocyte()
         self.trn = TRNGate()
         self.bf = BasalForebrain()
@@ -1093,8 +1238,6 @@ class DendriticCluster:
         self.prp_level = 0.0
 
         # Theta / Grid / HD
-        self.mt_theta = MicrotubuleSimulator2D("Theta Memory", length_points=32, rng=self.mt_rng)
-        self.mt_theta.H_BAR = 6.0
         self.grid_k = [
             np.array([np.cos(0), np.sin(0)]),
             np.array([np.cos(np.pi / 3), np.sin(np.pi / 3)]),
@@ -1115,6 +1258,11 @@ class DendriticCluster:
         self.weights = {"amygdala": 1.0, "striatum": 1.0, "hippocampus": 1.0}
         if load_genome:
             self.load_latest_memory()
+
+        if preserve_weights:
+            self.basal_ganglia.w_gate = preserve_weights["w_gate"]
+            self.basal_ganglia.w_motor = preserve_weights["w_motor"]
+            self.weights = preserve_weights["genome"]
 
     def _create_activity_bump(self, size, position):
         x = np.arange(size)
@@ -1889,7 +2037,6 @@ class Cerebellum:
 class SimulationState:
     def __init__(self):
         self._init_rngs(seed=None)
-        self.brain = DendriticCluster(rng=self.rng_brain, py_rng=self.py_rng, mt_rng=self.rng_microtub, load_genome=True)
         self.default_map_name = "quarters"
 
         self.map_size = 40
@@ -1983,6 +2130,7 @@ class SimulationState:
             "wm_decay_rate": 0.02,       # per-step decay factor
             "wm_motor_gain": 1.0,        # influence of WM bias on action
         }
+        self.brain = DendriticCluster(config=self.config, rng=self.rng_brain, py_rng=self.py_rng, mt_rng=self.rng_microtub, load_genome=True)
         self.apply_runtime_config()
 
         self.generation = 1
@@ -2052,7 +2200,7 @@ class SimulationState:
         self.lab_reward_flag = False
 
         # Rebuild brain with current seeded streams
-        self.brain = DendriticCluster(rng=self.rng_brain, py_rng=self.py_rng, mt_rng=self.rng_microtub, load_genome=False)
+        self.brain = DendriticCluster(config=self.config, rng=self.rng_brain, py_rng=self.py_rng, mt_rng=self.rng_microtub, load_genome=False)
         self.brain.soma.neighbor_mode = self.config.get("mt_neighbor_mode", "legacy")
         self.brain.mt_theta.neighbor_mode = self.config.get("mt_neighbor_mode", "legacy")
         det_mode = float(self.config.get("deterministic", 0.0)) > 0.5
@@ -2488,140 +2636,256 @@ class OpenFieldProtocol(LabProtocol):
 
 class TMazeProtocol(LabProtocol):
     """
-    T-Maze Delayed Alternation Task.
-    - Phase 1 (Forced): Block one arm, force rat to other. Reward 1.
-    - Phase 2 (Delay): Teleport to start, wait.
-    - Phase 3 (Choice): Open both arms. Reward 2 is in the OPPOSITE arm.
-    - Metric: % Correct Alternation.
+    T-Maze Delayed Alternation Task (Multi-Trial).
+    
+    Each trial:
+    - Phase 1 (Forced): Block one arm, force rat to the other. Reward.
+    - Phase 2 (Delay): Teleport to start, wait N frames.
+    - Phase 3 (Choice): Open both arms. Correct = OPPOSITE arm from forced.
+    
+    Across trials, the forced arm alternates (L, R, L, R...).
+    Metric: % correct alternation across trials.
     """
     def __init__(self):
         self.name = "T-Maze Alternation"
-        self.max_frames = 2000
-        self.phase = "setup" # setup, forced, delay, choice, complete
-        self.forced_arm = "left" # Randomize later
-        self.choice_timer = 0
-        self.delay_duration = 100 # Frames to wait in start box
+        self.max_frames = 20000  # Total budget across all trials
+        self.max_frames_per_phase = 1500  # Timeout per phase
         
-        # Coordinates (approximate for 40x40 map)
+        self.total_trials = 10
+        self.current_trial = 0
+        self.phase = "setup"
+        self.phase_timer = 0
+        self.delay_duration = 100
+        
+        # Results tracking
+        self.results = []  # List of {trial, forced_arm, choice, correct, latency}
+        self.last_score = 0
+        
+        # Coordinates (for 40x40 map)
         self.start_pos = np.array([20.0, 5.0])
-        self.t_junction = np.array([20.0, 30.0])
+        self.t_junction = np.array([20.0, 28.0])
         self.left_arm = np.array([5.0, 30.0])
         self.right_arm = np.array([35.0, 30.0])
+        
+        # Which arm to force on this trial (alternates)
+        self.forced_arm = "left"
+        self.finished = False
 
     def setup(self, sim):
-        # 1. Reset Simulation
         sim.map_size = 40
-        sim.occupancy_grid.fill(1) # Start filled (solid walls)
+        sim.occupancy_grid.fill(1)
         
-        # 2. Carve the "T"
-        # Vertical Stem
-        sim.occupancy_grid[5:31, 18:23] = 0 
-        # Horizontal Bar
-        sim.occupancy_grid[28:33, 5:36] = 0
-        # Start Box
-        sim.occupancy_grid[2:6, 18:23] = 0
-
-        # 3. Randomize Forced Arm
-        self.forced_arm = "left" if sim.py_rng.random() < 0.5 else "right"
-        target_pos = self.left_arm if self.forced_arm == "left" else self.right_arm
+        # Carve the permanent T structure
+        self._carve_t_maze(sim)
         
-        # 4. Block the OTHER arm (The one we aren't forcing)
-        if self.forced_arm == "left":
-            # Block Right Arm entrance
-            sim.occupancy_grid[28:33, 23:36] = 1 
-        else:
-            # Block Left Arm entrance
-            sim.occupancy_grid[28:33, 5:18] = 1
-
-        # 5. Place Rat & Target
-        sim.rat_pos = self.start_pos.copy()
-        sim.rat_vel = np.array([0.0, 0.0])
-        sim.targets = [target_pos]
-        sim.predator.pos = np.array([-100.0, -100.0]) # No cat
+        # Reset agents
+        sim.predator.pos = np.array([-100.0, -100.0])
+        sim.pheromones = []
         
-        # 6. Reset Brain (High Energy for the test)
+        # Reset brain state
         sim.frustration = 0.0
         sim.dopamine_tonic = 0.5
         sim.dopamine_ema = 0.5
         sim.brain.astrocyte.glycogen = 1.0
         sim.brain.astrocyte.neuronal_atp = 1.0
-        sim.brain.pfc.memory.fill(0.0) # Clear WM
+        sim.brain.pfc.memory.fill(0.0)
         
+        # Randomize first forced arm
+        self.forced_arm = "left" if sim.py_rng.random() < 0.5 else "right"
+        
+        # Start first trial
+        self.current_trial = 1
+        self.results = []
+        self.finished = False
+        self._start_forced_phase(sim)
+        
+        print(f"LAB: T-Maze Multi-Trial Started. {self.total_trials} trials.")
+
+    def _carve_t_maze(self, sim):
+        """Carve the basic T shape (without arm blocking)."""
+        sim.occupancy_grid.fill(1)
+        
+        # Vertical stem (wide enough for rat)
+        sim.occupancy_grid[3:31, 17:24] = 0
+        
+        # Horizontal bar at top
+        sim.occupancy_grid[27:33, 3:38] = 0
+        
+        # Start box
+        sim.occupancy_grid[1:5, 17:24] = 0
+
+    def _start_forced_phase(self, sim):
+        """Begin the forced run phase of a trial."""
         self.phase = "forced"
-        print(f"LAB: T-Maze Started. Forced Arm: {self.forced_arm.upper()}")
+        self.phase_timer = 0
+        
+        # Re-carve maze and block the non-forced arm
+        self._carve_t_maze(sim)
+        
+        if self.forced_arm == "left":
+            # Block right arm
+            sim.occupancy_grid[27:33, 24:38] = 1
+            target = self.left_arm.copy()
+        else:
+            # Block left arm
+            sim.occupancy_grid[27:33, 3:17] = 1
+            target = self.right_arm.copy()
+        
+        # Place rat and target
+        sim.rat_pos = self.start_pos.copy()
+        sim.rat_vel = np.array([0.0, 0.0])
+        sim.targets = [target]
+        
+        print(f"LAB: Trial {self.current_trial} - Forced to {self.forced_arm.upper()}")
+
+    def _start_delay_phase(self, sim):
+        """Begin the delay phase."""
+        self.phase = "delay"
+        self.phase_timer = 0
+        
+        # Teleport rat back to start
+        sim.rat_pos = self.start_pos.copy()
+        sim.rat_vel = np.array([0.0, 0.0])
+        sim.targets = []  # Hide target during delay
+        
+        print(f"LAB: Trial {self.current_trial} - Delay phase ({self.delay_duration} frames)")
+
+    def _start_choice_phase(self, sim):
+        """Begin the choice phase - both arms open."""
+        self.phase = "choice"
+        self.phase_timer = 0
+        
+        # Open both arms
+        self._carve_t_maze(sim)
+        
+        # Correct target is OPPOSITE of forced arm
+        if self.forced_arm == "left":
+            correct_target = self.right_arm.copy()
+        else:
+            correct_target = self.left_arm.copy()
+        
+        sim.targets = [correct_target]
+        
+        # Release rat from start
+        sim.rat_pos = self.start_pos.copy()
+        sim.rat_vel = np.array([0.0, 0.0])
+        
+        print(f"LAB: Trial {self.current_trial} - Choice phase (correct = {('RIGHT' if self.forced_arm == 'left' else 'LEFT')})")
+
+    def _end_trial(self, sim, chose_correct: bool, latency: int):
+        """Record result and prepare next trial."""
+        result = {
+            "trial": self.current_trial,
+            "forced_arm": self.forced_arm,
+            "correct": 1 if chose_correct else 0,
+            "latency": latency
+        }
+        self.results.append(result)
+        
+        status = "CORRECT" if chose_correct else "WRONG"
+        print(f"LAB: Trial {self.current_trial} - {status} (latency: {latency})")
+        
+        if chose_correct:
+            sim.score += 10
+            sim.lab_reward_flag = True
+        else:
+            sim.frustration = min(1.0, sim.frustration + 0.3)
+        
+        # Prepare next trial
+        if self.current_trial < self.total_trials:
+            self.current_trial += 1
+            # Alternate the forced arm
+            self.forced_arm = "right" if self.forced_arm == "left" else "left"
+            self._start_forced_phase(sim)
+        else:
+            self.finished = True
+            self._print_summary()
+
+    def _print_summary(self):
+        """Print final results."""
+        correct_count = sum(r["correct"] for r in self.results)
+        total = len(self.results)
+        pct = (correct_count / total * 100) if total > 0 else 0
+        
+        print(f"\n{'='*50}")
+        print(f"T-MAZE RESULTS: {correct_count}/{total} correct ({pct:.1f}%)")
+        print(f"{'='*50}")
+        for r in self.results:
+            mark = "✓" if r["correct"] else "✗"
+            print(f"  Trial {r['trial']}: Forced {r['forced_arm']:5s} -> {mark} (latency: {r['latency']})")
+        print(f"{'='*50}\n")
 
     def step(self, sim, timer):
-        # Logic FSM
-        dist_to_target = 999.0
-        if len(sim.targets) > 0:
-            dist_to_target = np.linalg.norm(sim.rat_pos - sim.targets[0])
-
-        # --- PHASE 1: FORCED RUN ---
+        if self.finished:
+            return None
+        
+        self.phase_timer += 1
+        
+        # --- FORCED PHASE ---
         if self.phase == "forced":
-            # If rat reached the forced target
-            if dist_to_target < 1.5:
-                # Reward!
-                sim.score += 1
-                sim.dopamine_tonic = clamp(sim.dopamine_tonic + 0.1, 0.0, 1.0)
-                sim.brain.astrocyte.glycogen = 1.0 # Refuel for the thinking phase
-                
-                print("LAB: Forced arm reached. Entering DELAY.")
-                self.phase = "delay"
-                self.choice_timer = 0
-                
-                # Teleport back to start
-                sim.rat_pos = self.start_pos.copy()
-                sim.rat_vel = np.array([0.0, 0.0])
-                sim.targets = [] # Hide food during delay
-
-        # --- PHASE 2: DELAY (Working Memory Test) ---
+            if len(sim.targets) > 0:
+                dist = np.linalg.norm(sim.rat_pos - sim.targets[0])
+                if dist < 1.5:
+                    # Reached forced target - reward and move to delay
+                    sim.lab_reward_flag = True
+                    sim.brain.astrocyte.glycogen = 1.0
+                    self._start_delay_phase(sim)
+                    return {"frame": timer, "trial": self.current_trial, "phase": 1}
+            
+            # Timeout in forced phase (shouldn't happen normally)
+            if self.phase_timer > self.max_frames_per_phase:
+                print(f"LAB: Trial {self.current_trial} - Forced phase TIMEOUT")
+                self._start_delay_phase(sim)
+        
+        # --- DELAY PHASE ---
         elif self.phase == "delay":
-            self.choice_timer += 1
-            # Lock rat in start box
-            sim.rat_pos = self.start_pos.copy() 
+            # Lock rat in start area
+            sim.rat_pos = self.start_pos.copy()
+            sim.rat_vel = np.array([0.0, 0.0])
             
-            if self.choice_timer > self.delay_duration:
-                print("LAB: Delay complete. Opening both arms.")
-                self.phase = "choice"
-                
-                # UNBLOCK the T-Maze (Open both arms)
-                sim.occupancy_grid[28:33, 5:36] = 0 
-                
-                # Place Reward in the OPPOSITE arm
-                new_target = self.right_arm if self.forced_arm == "left" else self.left_arm
-                sim.targets = [new_target]
-                
-                # We need to manually trigger a wall update for the frontend
-                # (This is a hack: we just mark the sim as needing a visual refresh if we could)
-                # Ideally, we send 'walls' in the step payload, but for now we rely on the loop.
-
-        # --- PHASE 3: CHOICE ---
+            if self.phase_timer >= self.delay_duration:
+                self._start_choice_phase(sim)
+            
+            return {"frame": timer, "trial": self.current_trial, "phase": 2}
+        
+        # --- CHOICE PHASE ---
         elif self.phase == "choice":
-            if dist_to_target < 1.5:
-                print("LAB: SUCCESS! Rat alternated correctly.")
-                sim.score += 10 # Big reward
-                sim.dopamine_tonic = clamp(sim.dopamine_tonic + 0.2, 0.0, 1.0)
-                self.phase = "complete"
+            # Check if reached correct target
+            if len(sim.targets) > 0:
+                dist_correct = np.linalg.norm(sim.rat_pos - sim.targets[0])
+                if dist_correct < 1.5:
+                    self._end_trial(sim, chose_correct=True, latency=self.phase_timer)
+                    return self._make_data_point(timer)
             
-            # Check for Failure (Entering the WRONG arm)
-            # Wrong arm is the one we forced previously
-            wrong_arm_pos = self.left_arm if self.forced_arm == "left" else self.right_arm
-            dist_to_wrong = np.linalg.norm(sim.rat_pos - wrong_arm_pos)
+            # Check if reached wrong target
+            wrong_target = self.left_arm if self.forced_arm == "left" else self.right_arm
+            dist_wrong = np.linalg.norm(sim.rat_pos - wrong_target)
+            if dist_wrong < 1.5:
+                self._end_trial(sim, chose_correct=False, latency=self.phase_timer)
+                return self._make_data_point(timer)
             
-            if dist_to_wrong < 3.0:
-                print("LAB: FAIL! Rat perseverated.")
-                sim.frustration = 1.0 # Punishment
-                self.phase = "complete"
+            # Timeout
+            if self.phase_timer > self.max_frames_per_phase:
+                print(f"LAB: Trial {self.current_trial} - Choice phase TIMEOUT (counting as wrong)")
+                self._end_trial(sim, chose_correct=False, latency=self.phase_timer)
+                return self._make_data_point(timer)
+        
+        return {"frame": timer, "trial": self.current_trial, "phase": self._phase_num()}
 
+    def _phase_num(self):
+        return {"forced": 1, "delay": 2, "choice": 3}.get(self.phase, 0)
+
+    def _make_data_point(self, timer):
+        """Generate data point for plotting."""
         return {
-            "frame": timer,
-            "phase": 1 if self.phase == "forced" else (2 if self.phase == "delay" else 3),
-            "correct": 1 if self.phase == "complete" and sim.dopamine_ema > 0.8 else 0,
-            # Pass map_update flag if we changed walls? (Handled by frontend poll usually)
+            "frame": self.current_trial,  # X-axis = trial number
+            "correct": self.results[-1]["correct"] if self.results else 0,
+            "latency": self.results[-1]["latency"] if self.results else 0,
+            "cumulative_pct": sum(r["correct"] for r in self.results) / len(self.results) * 100 if self.results else 0
         }
 
     def is_complete(self, sim, timer):
-        return self.phase == "complete" or timer >= self.max_frames
+        return self.finished or timer >= self.max_frames
 
 
 class MorrisWaterMazeProtocol(LabProtocol):
@@ -2838,16 +3102,16 @@ class CustomProtocol(LabProtocol):
     def setup(self, sim):
         # 1. Map & Geometry
         sim.map_size = int(self.config.get("map_size", 20))
-        sim.occupancy_grid = np.zeros((sim.map_size, sim.map_size), dtype=int)
         
-        # Build Walls (Default: Box)
-        sim.occupancy_grid[0, :] = 1
-        sim.occupancy_grid[-1, :] = 1
-        sim.occupancy_grid[:, 0] = 1
-        sim.occupancy_grid[:, -1] = 1
-        
-        # Optional: Load specific map pattern if provided
-        # (You could expand this to accept a full grid array)
+        if "grid" in self.config:
+            sim.occupancy_grid = np.array(self.config["grid"], dtype=int)
+        else:
+            sim.occupancy_grid = np.zeros((sim.map_size, sim.map_size), dtype=int)
+            # Build Walls (Default: Box)
+            sim.occupancy_grid[0, :] = 1
+            sim.occupancy_grid[-1, :] = 1
+            sim.occupancy_grid[:, 0] = 1
+            sim.occupancy_grid[:, -1] = 1
         
         # 2. Reset Agents
         start_pos = self.config.get("rat_start", [2.0, 2.0])
@@ -2881,11 +3145,15 @@ class CustomProtocol(LabProtocol):
         # Logic varies by Objective Mode
         success = False
         failure = False
+        dist = 999.0
         
         # Mode: Reach Target (Navigation)
         if self.mode == "reach_target":
             for t in sim.targets:
-                if np.linalg.norm(sim.rat_pos - t) < 1.5:
+                d = np.linalg.norm(sim.rat_pos - t)
+                if d < dist:
+                    dist = d
+                if d < 1.5:
                     success = True
                     sim.lab_reward_flag = True # Trigger reward in main loop
         
@@ -2905,10 +3173,14 @@ class CustomProtocol(LabProtocol):
             return {
                 "frame": timer,
                 "success": 1 if success else 0,
-                "latency": timer
+                "latency": timer,
+                "dist": float(dist)
             }
 
-        return None
+        return {
+            "frame": timer,
+            "dist": float(dist)
+        }
 
     def is_complete(self, sim, timer):
         return self.finished or timer >= self.max_frames
@@ -3743,6 +4015,29 @@ def config():
         prev_det = float(sim.config.get("deterministic", 0.0))
         prev_seed = sim.config.get("seed")
 
+        # Detect Architecture Change
+        prev_mt_type = sim.config.get("coherence_field_type", "microtubule")
+        
+        # Update config dictionary from payload
+        if "coherence_field_type" in payload:
+             sim.config["coherence_field_type"] = payload["coherence_field_type"]
+
+        # Check if we need to rebuild the brain
+        new_mt_type = sim.config.get("coherence_field_type", "microtubule")
+        
+        if prev_mt_type != new_mt_type:
+            print(f"ARCH: Switching Microtubules from {prev_mt_type} to {new_mt_type}...")
+            # Re-initialize the brain with the new factory setting
+            saved_weights = {"w_gate": sim.brain.basal_ganglia.w_gate.copy(), "w_motor": sim.brain.basal_ganglia.w_motor.copy(), "genome": sim.brain.weights.copy()}
+            sim.brain = DendriticCluster(
+                config=sim.config, 
+                rng=sim.rng_brain, 
+                py_rng=sim.py_rng, 
+                mt_rng=sim.rng_microtub, 
+                load_genome=True,
+                preserve_weights=saved_weights
+            )
+
         # Validate & clamp
         if "speed" in payload:
             sim.config["speed"] = int(np.clip(int(payload["speed"]), 1, int(sim.config.get("max_speed", 10))))
@@ -3917,8 +4212,12 @@ def brain_fingerprint(sim: SimulationState) -> str:
     h = hashlib.sha256()
     h.update(sim.brain.basal_ganglia.w_gate.astype(np.float64).tobytes())
     h.update(sim.brain.basal_ganglia.w_motor.astype(np.float64).tobytes())
-    h.update(sim.brain.soma.psi.astype(np.complex128).tobytes())
-    h.update(sim.brain.mt_theta.psi.astype(np.complex128).tobytes())
+    
+    # OLD: h.update(sim.brain.soma.psi...)
+    # NEW: Use Interface
+    h.update(sim.brain.soma.get_fingerprint_bytes())
+    h.update(sim.brain.mt_theta.get_fingerprint_bytes())
+    
     h.update(sim.brain.grid_phases.astype(np.float64).tobytes())
     h.update(sim.brain.hd_cells.astype(np.float64).tobytes())
     return h.hexdigest()
