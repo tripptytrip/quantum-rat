@@ -1990,6 +1990,8 @@ class DendriticCluster:
 
 
 
+from tournament import TournamentManager
+
 class Predator:
     def __init__(self, pos):
         self.pos = np.array(pos)
@@ -2161,6 +2163,7 @@ class SimulationState:
 
         self.lab = ScientificTestBed(self)
         self.lab_reward_flag = False
+        self.tournament = TournamentManager(self.config, self.map_size)
 
         if not (float(self.config.get("deterministic", 0.0)) > 0.5):
             if not os.path.exists("evolution_log.csv"):
@@ -3318,6 +3321,128 @@ def step():
         glycogen_level = float(sim.brain.astrocyte.glycogen)
         atp_level = float(sim.brain.astrocyte.neuronal_atp)
 
+        # --- TOURNAMENT MODE BRANCH ---
+        if sim.tournament.active:
+            tournament_rats = []
+            leader = None
+            living_rats = []
+
+            for i in range(iterations):
+                # Ensure arena has targets
+                if not sim.targets:
+                    sim.targets = [sim._spawn_single_target() for _ in range(3)]
+
+                env_state = {
+                    "grid": sim.occupancy_grid,
+                    "targets": sim.targets,
+                    "predator": sim.predator.pos,
+                }
+                tournament_rats = sim.tournament.step(dt, env_state)
+                sim.frames_alive += 1
+
+                living_rats = [a for a in sim.tournament.agents if a.deaths == 0]
+                if living_rats:
+                    closest = min(living_rats, key=lambda a: np.linalg.norm(a.pos - sim.predator.pos))
+                    sim.predator.hunt(closest.pos, closest.vel, sim.occupancy_grid, sim.map_size, dt_scale)
+
+                if sim.frames_alive > 2000 or not living_rats:
+                    finished = sim.tournament.end_round()
+                    sim.frames_alive = 0
+                    # Reset trails/targets each round
+                    sim.targets = [sim._spawn_single_target() for _ in range(3)]
+                    sim.pheromones = []
+                    if hasattr(sim, "predator"):
+                        sim.predator.pos = np.array([float(sim.map_size - 5), 3.0])
+                    if finished:
+                        print("TOURNAMENT COMPLETE")
+
+            if sim.tournament.agents:
+                leader = max(sim.tournament.agents, key=lambda a: a.score)
+                if living_rats:
+                    leader = max(living_rats, key=lambda a: a.score)
+
+            # Populate viz from leader or fall back to placeholders
+            leader_data = leader.brain_data if leader else {}
+            soma_density = np.array(leader_data.get("soma", soma_density))
+            d_theta = np.array(leader_data.get("theta", d_theta))
+            d_grid = np.array(leader_data.get("grid", d_grid))
+
+            brain_payload = {
+                "soma": maybe_downsample(soma_density, downsample).tolist(),
+                "theta": maybe_downsample(d_theta, downsample).tolist() if isinstance(d_theta, np.ndarray) else float(d_theta),
+                "grid": maybe_downsample(d_grid, downsample).tolist(),
+                "hd": maybe_downsample(getattr(leader.brain, "hd_cells", np.zeros_like(sim.brain.hd_cells)), 1).tolist() if leader else maybe_downsample(sim.brain.hd_cells, 1).tolist(),
+            }
+
+            stats_payload = {
+                "frustration": getattr(leader, "frustration", 0.0),
+                "score": getattr(leader, "score", 0),
+                "status": "ALIVE" if leader and leader.deaths == 0 else "DEAD",
+                "dopamine": getattr(leader, "dopamine_tonic", 0.0),
+                "dopamine_tonic": getattr(leader, "dopamine_tonic", 0.0),
+                "dopamine_phasic": getattr(leader, "dopamine_phasic", 0.0),
+                "panic": float(getattr(leader, "panic", 0.0)) if leader else 0.0,
+                "cortisol": float(getattr(leader, "cortisol", 0.0)) if leader else 0.0,
+                "mode": "TOURNAMENT",
+                "energy": 1.0,
+                "atp": 1.0,
+                "deaths": getattr(leader, "deaths", 0),
+                "generation": sim.generation,
+                "serotonin": getattr(leader, "serotonin", 0.0),
+                "norepinephrine": 0.0,
+                "ne_phasic": 0.0,
+                "drive_pressure": 0.0,
+                "lc_mode": "ARENA",
+                "ne_uncertainty": 0.0,
+                "ach_tonic": 0.0,
+                "ach_mode": "BALANCED",
+                "place_nav_mag": 0.0,
+                "place_act_max": 0.0,
+                "place_goal_strength": 0.0,
+                "mt_theta_readouts": {},
+                "mt_soma_readouts": {},
+                "mt_plasticity_mult": 0.0,
+                "mt_gate_thr": 0.0,
+                "map_size": sim.map_size,
+                "trn_modes": [],
+                "wm": {
+                    "slots": 0,
+                    "write_threshold": 0.0,
+                    "decay_rate": 0.0,
+                    "motor_gain": 0.0,
+                    "bias_vec": [],
+                    "slot_strengths": [],
+                },
+                "pp": {
+                    "pe_norm": 0.0,
+                    "pe_ema": 0.0,
+                    "yhat_next": [0.0] * 6,
+                },
+            }
+
+            leader_whisk = leader.whisk_angle if leader else sim.whisk_angle
+            leader_hits = leader.whisker_hits if leader else sim.whisker_hits
+            leader_vision = leader.vision_buffer if leader else sim.vision_buffer
+            leader_pos = leader.pos.tolist() if leader else sim.rat_pos.tolist()
+
+            # Build pheromone trail from all agents for visualization
+            sim.pheromones.extend([[float(a.pos[0]), float(a.pos[1])] for a in sim.tournament.agents if a.deaths == 0])
+            sim.pheromones = sim.pheromones[-500:]
+
+            return jsonify(
+                {
+                    "rat": leader_pos,
+                    "tournament_rats": tournament_rats,
+                    "targets": [t.tolist() for t in sim.targets],
+                    "predator": sim.predator.pos.tolist(),
+                    "brain": brain_payload,
+                    "stats": stats_payload,
+                    "pheromones": sim.pheromones,
+                    "whiskers": {"angle": leader_whisk, "hits": leader_hits},
+                    "vision": leader_vision,
+                }
+            )
+
         for i in range(iterations):
             if sim.lab.active:
                 sim.lab.step()
@@ -3968,6 +4093,19 @@ def stop_lab():
         sim.lab.stop_experiment()
         sim.generate_map()
         return jsonify({"status": "stopped"})
+
+
+@app.route("/tournament/start", methods=["POST"])
+def start_tournament():
+    with sim_lock:
+        sim.tournament.start_tournament()
+        sim.frames_alive = 0
+        # Reset environment targets/trails for arena play
+        sim.targets = [sim._spawn_single_target() for _ in range(3)]
+        sim.pheromones = []
+        if hasattr(sim, "predator"):
+            sim.predator.pos = np.array([float(sim.map_size - 5), 3.0])
+        return jsonify({"status": "started"})
 
 
 @app.route("/lab/results", methods=["GET"])

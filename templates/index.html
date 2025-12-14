@@ -121,6 +121,7 @@
                 <button class="tab-btn" onclick="setTab('controls')" id="tab-btn-controls">Controls</button>
                 <button class="tab-btn" onclick="setTab('research')" id="tab-btn-research">Research</button>
                 <button class="tab-btn" onclick="setTab('editor')" id="tab-btn-editor">Map Editor</button>
+                <button class="tab-btn" onclick="setTab('tournament')" id="tab-btn-tournament">Tournament</button>
             </div>
 
             <div class="flex-1 overflow-y-auto custom-scrollbar pr-2 relative">
@@ -446,6 +447,42 @@
                     </div>
                 </div>
 
+                <div id="view-tournament" class="hidden flex-col gap-4">
+                    <div class="bg-zinc-900 p-4 rounded border border-orange-900/50">
+                        <div class="flex justify-between items-center mb-3 border-b border-orange-900/30 pb-2">
+                            <h3 class="text-[10px] text-orange-400 uppercase tracking-widest font-bold">Thunderdome Arena</h3>
+                            <span id="tourney-round-badge" class="text-xs bg-orange-900/50 text-orange-200 px-2 py-0.5 rounded border border-orange-800">ROUND 1 / 3</span>
+                        </div>
+
+                        <div class="flex gap-2 mb-4">
+                            <button onclick="startTournament()" class="flex-1 btn bg-orange-900/20 text-orange-400 border-orange-800 hover:bg-orange-800/30 text-xs font-bold">
+                                ▶ START MATCH
+                            </button>
+                        </div>
+
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse">
+                                <thead>
+                                    <tr class="text-[10px] text-zinc-500 uppercase border-b border-zinc-800">
+                                        <th class="pb-2 pl-1">Agent</th>
+                                        <th class="pb-2 text-center">Status</th>
+                                        <th class="pb-2 text-right">Score</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tourney-leaderboard" class="text-xs">
+                                    <tr class="text-zinc-600 italic"><td colspan="3" class="py-4 text-center">Waiting for match data...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="bg-zinc-900 p-3 rounded border border-zinc-800">
+                        <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest">Genetics (Leader)</h3>
+                        <div id="tourney-dna-panel" class="space-y-2">
+                            </div>
+                    </div>
+                </div>
+
             </div>
         </div>
     </div>
@@ -717,7 +754,7 @@
 
     // --- TAB SYSTEM ---
     window.setTab = function(tabName) {
-        ['monitor', 'controls', 'research', 'editor'].forEach(t => {
+        ['monitor', 'controls', 'research', 'editor', 'tournament'].forEach(t => {
             const btn = document.getElementById(`tab-btn-${t}`);
             const view = document.getElementById(`view-${t}`);
             
@@ -791,6 +828,7 @@
 
     let wallsInstancedMesh, wireframeBox;
     let ratMesh, predatorMesh, targetMeshes, targetLights;
+    let ratMeshes = [];
     let pheromoneMeshes = [], phantomMeshes = [];
     let memoryObjects = [];
     let leftWhisker, rightWhisker;
@@ -827,19 +865,21 @@
         gridHelper.position.set(MAP_SIZE / 2 - 0.5, 0.01, MAP_SIZE / 2 - 0.5);
         scene.add(gridHelper);
 
-        ratMesh = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1, 8), matRat);
-        ratMesh.castShadow = true; 
+        const baseRat = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1, 8), matRat);
+        baseRat.castShadow = true; 
         
-        ratMesh.add(ratCamera);
+        baseRat.add(ratCamera);
         ratCamera.position.set(0, 0.2, 0.2); 
         ratCamera.rotation.x = -Math.PI / 2; 
         
         const visionGeo = new THREE.ConeGeometry(4, 8, 32, 1, true, 0, 1.9); 
         const visionCone = new THREE.Mesh(visionGeo, matVisionCone);
         visionCone.position.y = 4; visionCone.rotation.x = Math.PI; 
-        ratMesh.add(visionCone);
+        baseRat.add(visionCone);
         
-        scene.add(ratMesh);
+        scene.add(baseRat);
+        ratMesh = baseRat;
+        ratMeshes.push(baseRat);
 
         predatorMesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.5, 0), matPredator);
         predatorMesh.castShadow = true; scene.add(predatorMesh);
@@ -1038,6 +1078,73 @@
         else builder.classList.add('hidden');
     }
 
+    window.startTournament = async function() {
+        await fetch('/tournament/start', {method: 'POST'});
+    }
+
+    function updateTournamentStats(rats) {
+        const tbody = document.getElementById('tourney-leaderboard');
+        const roundBadge = document.getElementById('tourney-round-badge');
+        const dnaPanel = document.getElementById('tourney-dna-panel');
+        
+        if (!tbody || !rats || rats.length === 0) return;
+
+        // 1. Update Round Badge
+        if (rats[0].round) {
+            roundBadge.innerText = `ROUND ${rats[0].round} / 3`;
+        }
+
+        // 2. Sort by Score (Descending)
+        const sortedRats = [...rats].sort((a, b) => b.score - a.score);
+        const leader = sortedRats[0];
+
+        // 3. Render Table
+        tbody.innerHTML = '';
+        sortedRats.forEach(r => {
+            const row = document.createElement('tr');
+            row.className = "border-b border-zinc-800/50 hover:bg-zinc-800/50 transition-colors";
+            
+            // Status Dot
+            const statusColor = r.alive ? "bg-green-500" : "bg-red-900";
+            const statusText = r.alive ? "ALIVE" : "DEAD";
+            const statusClass = r.alive ? "text-green-400" : "text-red-700";
+            
+            // Highlight leader
+            const nameClass = (r.id === leader.id) ? "text-orange-400 font-bold" : "text-zinc-300";
+            const icon = (r.id === leader.id) ? "👑 " : "";
+
+            row.innerHTML = `
+                <td class="py-2 pl-1 ${nameClass}">${icon}${r.label}</td>
+                <td class="py-2 text-center">
+                    <span class="inline-block w-2 h-2 rounded-full ${statusColor} mr-1"></span>
+                    <span class="text-[10px] ${statusClass}">${statusText}</span>
+                </td>
+                <td class="py-2 text-right font-mono text-cyan-300 font-bold">${r.score}</td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        // 4. Render Leader DNA
+        if (leader.dna) {
+            dnaPanel.innerHTML = '';
+            for (const [trait, value] of Object.entries(leader.dna)) {
+                // Normalize for visual bar (0.0 to 3.0 range approx)
+                const pct = Math.min(100, (value / 3.0) * 100);
+                dnaPanel.innerHTML += `
+                    <div>
+                        <div class="flex justify_between text-[10px] mb-0.5">
+                            <span class="text-zinc-400 uppercase">${trait.replace(/_/g, ' ')}</span>
+                            <span class="text-zinc-300">${value.toFixed(2)}</span>
+                        </div>
+                        <div class="h-1 bg-zinc-800 rounded overflow-hidden">
+                            <div class="h-full bg-orange-600" style="width: ${pct}%"></div>
+                        </div>
+                    </div>
+                `;
+            }
+        }
+    }
+
     async function pollLabResults() {
         if(!isLabActive) return;
         const res = await fetch('/lab/results');
@@ -1148,6 +1255,7 @@
 
     // --- LOOP ---
     let lastRatPos = new THREE.Vector3();
+    let lastRatPoses = {};
     const pipCheck = document.getElementById('chk-pip');
     
     async function loop() {
@@ -1158,17 +1266,47 @@
             if (!res.ok) throw new Error(`/step failed: ${res.status}`);
             const data = await res.json();
 
-            const newRatPos = new THREE.Vector3(data.rat[0], 0.5, data.rat[1]);
-            ratMesh.position.copy(newRatPos);
-            
-            const moveDir = new THREE.Vector3().subVectors(newRatPos, lastRatPos);
-            if (moveDir.lengthSq() > 0.001) {
-                 const angle = Math.atan2(moveDir.z, moveDir.x);
-                 ratMesh.rotation.set(Math.PI/2, 0, angle - Math.PI/2);
-                 const bob = Math.sin(performance.now() / 100) * 0.05;
-                 ratCamera.position.y = 0.2 + bob;
+            if (data.tournament_rats && Array.isArray(data.tournament_rats)) {
+                // Ensure we have enough meshes
+                while (ratMeshes.length < data.tournament_rats.length) {
+                    const m = new THREE.Mesh(new THREE.ConeGeometry(0.4, 1, 8), matRat);
+                    m.castShadow = true;
+                    scene.add(m);
+                    ratMeshes.push(m);
+                }
+                data.tournament_rats.forEach((r, idx) => {
+                    const mesh = ratMeshes[idx];
+                    mesh.visible = r.alive; // Only show living rats
+                    if (!r.alive) return;
+
+                    const pos = new THREE.Vector3(r.pos[0], 0.5, r.pos[1]);
+                    mesh.position.copy(pos);
+                    
+                    // FIX: Use heading sent from server
+                    if (r.heading !== undefined) {
+                        mesh.rotation.set(Math.PI/2, 0, r.heading - Math.PI/2);
+                    }
+                });
+                // Hide unused meshes
+                for (let i = data.tournament_rats.length; i < ratMeshes.length; i++) {
+                    ratMeshes[i].visible = false;
+                }
+                
+                // NEW: Update tournament UI
+                updateTournamentStats(data.tournament_rats);
+            } else {
+                const newRatPos = new THREE.Vector3(data.rat[0], 0.5, data.rat[1]);
+                ratMesh.position.copy(newRatPos);
+                
+                const moveDir = new THREE.Vector3().subVectors(newRatPos, lastRatPos);
+                if (moveDir.lengthSq() > 0.001) {
+                     const angle = Math.atan2(moveDir.z, moveDir.x);
+                     ratMesh.rotation.set(Math.PI/2, 0, angle - Math.PI/2);
+                     const bob = Math.sin(performance.now() / 100) * 0.05;
+                     ratCamera.position.y = 0.2 + bob;
+                }
+                lastRatPos.copy(newRatPos);
             }
-            lastRatPos.copy(newRatPos);
 
             if(data.predator) {
                 // FIX: If predator is at the "holding pen" (-100), hide it entirely
