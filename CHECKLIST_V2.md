@@ -11,39 +11,39 @@ Rule: no box may be checked unless its DoD is proven (tests/logs/artifacts).
   - [ ] Document exact command + seed used in `docs/legacy_baseline.md`
 
 ## 1) Repo skeleton matches v2.1 spec (Milestone 0.1)
-- [ ] Directory tree exists: `app/ core/ brain/ experiments/ metrics/ tests/ docs/`
-- [ ] Imports resolve (no circular deps)
-- [ ] Placeholder README updated to point to v2.1 spec + backlog
+- [x] Directory tree exists: `app/ core/ brain/ experiments/ metrics/ tests/ docs/`
+- [x] Imports resolve (no circular deps)
+- [x] Placeholder README updated to point to v2.1 spec + backlog
 
 ## 2) Deterministic RNG infrastructure (Milestone 0.2)
-- [ ] Single RNG authority implemented (`core/rng.py`)
-- [ ] No raw `random` / `np.random` usage outside RNG authority
-- [ ] Agent-level seed offset support exists
+- [x] Single RNG authority implemented (`core/rng.py`)
+- [x] No raw `random` / `np.random` usage outside RNG authority
+- [x] Agent-level seed offset support exists
 
 ## 3) TickData + logging (Milestone 0.3)
-- [ ] `metrics/schema.py` defines TickData (+ schema_version)
-- [ ] `metrics/logger.py` emits JSONL per tick
-- [ ] Per-tick hash helper exists (stable ordering, deterministic)
+- [x] `metrics/schema.py` defines TickData (+ schema_version)
+- [x] `metrics/logger.py` emits JSONL per tick
+- [x] Per-tick hash helper exists (stable ordering, deterministic)
 
 ## 4) CI determinism gate (Milestone 0.4)
-- [ ] `tests/determinism/` baseline trace hashes committed
-- [ ] CI fails on any determinism regression
-- [ ] Baseline update requires explicit flag/script (auditable)
+- [x] `tests/determinism/` baseline trace hashes committed
+- [x] CI fails on any determinism regression
+- [x] Baseline update requires explicit flag/script (auditable) — baseline regenerated 2025-12-16 after Criticality integration
 
 ## 5) World + sensors + Observation contract (Milestone 1)
-- [ ] Deterministic world stepping (`core/world.py`, `core/entities.py`)
-- [ ] Sensors produce normalized Observation (`brain/contracts.py`)
-- [ ] Observation includes egomotion/proprioception (no position cheating)
+- [x] Deterministic world stepping (`core/world.py`, `core/entities.py`)
+- [x] Sensors produce normalized Observation (`brain/contracts.py`)
+- [x] Observation includes egomotion/proprioception (no position cheating)
 
 ## 6) Physiology + neuromodulation (Milestone 2)
-- [ ] ATP/glycogen dynamics implemented, logged in TickData
-- [ ] DA/5HT/NE/ACh updates deterministic + logged
+- [x] ATP/glycogen dynamics implemented, logged in TickData
+- [x] DA/5HT/NE/ACh updates deterministic + logged
 
 ## 7) Criticality core (Milestone 3 — highest priority)
-- [ ] CriticalityField lattice implemented
-- [ ] Avalanche detection + κ (EMA) implemented + logged
-- [ ] Validation sweep script exists + has assertions
-- [ ] Reduced sweep runs in CI
+- [x] CriticalityField lattice implemented
+- [x] Avalanche detection + κ (EMA) implemented + logged
+- [x] Validation sweep script exists + has assertions
+- [x] Reduced sweep runs in CI
 
 ## 8) TRN, microsleep, replay, memory (Milestone 4)
 - [ ] TRN gating states logged

@@ -1,2 +1,8 @@
-flask
-numpy
+Flask>=2.3
+pandas
+pyarrow
+matplotlib
+scipy
+tabulate
+Flask
+
