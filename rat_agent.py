@@ -25,7 +25,7 @@ class RatAgent:
         self.deaths = 0
         self.frames_alive = 0
         self.frustration = 0.0
-        self.dopamine_tonic = 0.2
+        self.dopamine_tonic = float(self.config.get("dopamine_tonic", 0.2))
         self.dopamine_phasic = 0.0
         self.serotonin = 0.5
         self.panic = 0.0
@@ -56,25 +56,29 @@ class RatAgent:
         self.last_touch = 0.0
 
     def check_collision(self, pos, grid):
-        map_size = grid.shape[0]
-        ix, iy = int(pos[0]), int(pos[1])
-        if ix < 0 or ix >= map_size or iy < 0 or iy >= map_size:
-            return True
-        if grid[iy, ix] == 1:
+        """Return True if position (with small radius) hits a wall or is out of bounds."""
+        map_h, map_w = grid.shape
+
+        def is_wall(x, y):
+            if x < 0 or x >= map_w or y < 0 or y >= map_h:
+                return True
+            return grid[int(y), int(x)] == 1
+
+        if is_wall(pos[0], pos[1]):
             return True
 
         radius = 0.3
-        if grid[int(pos[1]), int(pos[0] + radius)] == 1:
+        if is_wall(pos[0] + radius, pos[1]):
             return True
-        if grid[int(pos[1]), int(pos[0] - radius)] == 1:
+        if is_wall(pos[0] - radius, pos[1]):
             return True
-        if grid[int(pos[1] + radius), int(pos[0])] == 1:
+        if is_wall(pos[0], pos[1] + radius):
             return True
-        if grid[int(pos[1] - radius), int(pos[0])] == 1:
+        if is_wall(pos[0], pos[1] - radius):
             return True
         return False
 
-    def cast_ray(self, angle, grid, predator_pos, targets):
+    def cast_ray(self, angle, grid, predators, targets):
         dx, dy = np.cos(angle), np.sin(angle)
         min_dist = 15.0
         obj_type = 0
@@ -88,14 +92,15 @@ class RatAgent:
                 break
 
         # Predator Cast
-        to_pred = predator_pos - self.pos
-        dist_pred = np.linalg.norm(to_pred)
-        if dist_pred < min_dist and dist_pred > 0:
-            pred_angle = np.arctan2(to_pred[1], to_pred[0])
-            if angdiff(angle, pred_angle) < 0.1:
-                min_dist = dist_pred
-                obj_type = 2
-
+        for predator_pos in predators:
+            to_pred = predator_pos - self.pos
+            dist_pred = np.linalg.norm(to_pred)
+            if dist_pred < min_dist and dist_pred > 0:
+                pred_angle = np.arctan2(to_pred[1], to_pred[0])
+                if angdiff(angle, pred_angle) < 0.1:
+                    min_dist = dist_pred
+                    obj_type = 2
+        
         # Target Cast
         for t in targets:
             to_t = t - self.pos
@@ -108,7 +113,7 @@ class RatAgent:
 
         return min_dist, obj_type
 
-    def update_sensors(self, dt, grid, predator_pos, targets):
+    def update_sensors(self, dt, grid, predators, targets):
         self.whisk_phase += 0.8 * (dt / 0.05)
         self.whisk_angle = np.sin(self.whisk_phase) * (np.pi / 4.0)
         heading = np.arctan2(self.vel[1], self.vel[0]) if np.linalg.norm(self.vel) > 0 else self.heading
@@ -126,7 +131,7 @@ class RatAgent:
         for i in range(12):
             offset = (i / 11.0 - 0.5) * fov
             ray_ang = heading + offset
-            dist, obj = self.cast_ray(ray_ang, grid, predator_pos, targets)
+            dist, obj = self.cast_ray(ray_ang, grid, predators, targets)
             self.vision_buffer.append({"dist": dist, "type": obj, "angle": ray_ang})
 
     def receive_reward(self):
@@ -139,9 +144,9 @@ class RatAgent:
     def step(self, dt, env_state, external_reward=0.0):
         grid = env_state["grid"]
         targets = env_state["targets"]
-        predator_pos = env_state["predator"]
+        predators = env_state["predators"]
 
-        self.update_sensors(dt, grid, predator_pos, targets)
+        self.update_sensors(dt, grid, predators, targets)
         self.frames_alive += 1
 
         # Update Head Direction
@@ -159,8 +164,15 @@ class RatAgent:
             self.frustration = min(1.0, self.frustration + 0.1)
             self.vel *= -0.5
 
-        dist_pred = np.linalg.norm(self.pos - predator_pos)
-        danger = max(0.0, 1.0 - dist_pred / 10.0)
+        min_dist_pred = 1000.0
+        closest_predator = None
+        for predator_pos in predators:
+            dist = np.linalg.norm(self.pos - predator_pos)
+            if dist < min_dist_pred:
+                min_dist_pred = dist
+                closest_predator = predator_pos
+        
+        danger = max(0.0, 1.0 - min_dist_pred / 10.0)
 
         # Run Brain
         soma, theta, grid_viz, decision, gl, atp, pain, touch, pm, sr, tr, mp, mg, idopa, iphasic = self.brain.process_votes(
@@ -180,6 +192,7 @@ class RatAgent:
             collision=collision,
             rat_pos=self.pos,
             dt=dt,
+            predator_pos=closest_predator
         )
 
         # Physics

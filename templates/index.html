@@ -481,6 +481,11 @@
                         <div id="tourney-dna-panel" class="space-y-2">
                             </div>
                     </div>
+
+                    <div class="bg-zinc-900 p-3 rounded border border-zinc-800">
+                        <h3 class="text-[10px] text-zinc-500 mb-2 uppercase tracking-widest">Genetics (All Agents)</h3>
+                        <div id="tourney-dna-all" class="space-y-3 max-h-72 overflow-y-auto pr-1"></div>
+                    </div>
                 </div>
 
             </div>
@@ -1082,10 +1087,95 @@
         await fetch('/tournament/start', {method: 'POST'});
     }
 
+    const DNA_BOUNDS = {
+        fear_gain: {min: 0, max: 10, label: "Fear Gain"},
+        memory_gain: {min: 0, max: 5, label: "Memory Gain"},
+        dopamine_tonic: {min: -0.3, max: 0.8, label: "Dopamine Tonic"},
+        cerebellum_gain: {min: 0, max: 5, label: "Cerebellum Gain"},
+        energy_constraint: {min: 0, max: 1, label: "Energy Constraint"},
+        enable_sensory_cortex: {label: "Sensory Cortex", kind: "bool"},
+        enable_thalamus: {label: "Thalamus", kind: "bool"},
+        sensory_blend: {min: 0, max: 1, label: "Sensory Blend"},
+        enable_replay: {label: "Replay Enabled", kind: "bool"},
+        replay_steps: {min: 0, max: 50, label: "Replay Steps"},
+        replay_len: {min: 10, max: 5000, label: "Replay Buffer"},
+        replay_strength: {min: 0, max: 2, label: "Replay Strength"},
+        replay_bridge_prob: {min: 0, max: 1, label: "Replay Bridge Prob"},
+        panic_gain: {min: 0, max: 5, label: "Panic Gain"},
+        cortisol_gain: {min: 0, max: 5, label: "Cortisol Gain"},
+        cortisol_decay: {min: 0, max: 0.1, label: "Cortisol Decay"},
+        panic_trn_gain: {min: 0, max: 5, label: "Panic TRN Gain"},
+        panic_motor_bias: {min: 0, max: 5, label: "Panic Motor Bias"},
+        stress_learning_gain: {min: 0, max: 5, label: "Stress Learning"},
+        enable_predictive_processing: {label: "Predictive Processing", kind: "bool"},
+        pp_lr: {min: 0, max: 1, label: "PP LR"},
+        pp_weight_decay: {min: 0, max: 1, label: "PP Weight Decay"},
+        pp_error_tau: {min: 0, max: 10, label: "PP Error Tau"},
+        pp_surprise_gain: {min: 0, max: 5, label: "PP Surprise Gain"},
+        pp_explore_gain: {min: 0, max: 5, label: "PP Explore Gain"},
+        pp_error_scale: {min: 0, max: 10, label: "PP Error Scale"},
+        enable_place_cells: {label: "Place Cells", kind: "bool"},
+        place_n: {min: 16, max: 1024, label: "Place N"},
+        place_sigma: {min: 0.5, max: 5, label: "Place Sigma"},
+        place_lr: {min: 0, max: 0.5, label: "Place LR"},
+        place_decay: {min: 0, max: 0.1, label: "Place Decay"},
+        place_goal_lr: {min: 0, max: 0.5, label: "Place Goal LR"},
+        place_nav_gain: {min: 0, max: 5, label: "Place Nav Gain"},
+        place_nav_blend: {min: 0, max: 1, label: "Place Nav Blend"},
+        goal_reward_threshold: {min: 0, max: 1, label: "Goal Reward Threshold"},
+        mt_causal: {label: "MT Causal", kind: "bool"},
+        mt_mod_plasticity: {min: 0, max: 2, label: "MT Plasticity"},
+        mt_mod_explore: {min: 0, max: 2, label: "MT Explore"},
+        mt_mod_gate: {min: 0, max: 2, label: "MT Gate"},
+        mt_readout_tau: {min: 0, max: 5, label: "MT Readout Tau"},
+        mt_neighbor_mode: {label: "MT Neighbor Mode", kind: "choice"},
+        wm_slots: {min: 1, max: 10, label: "WM Slots"},
+        wm_write_threshold: {min: 0, max: 1, label: "WM Write Threshold"},
+        wm_decay_rate: {min: 0, max: 1, label: "WM Decay Rate"},
+        wm_motor_gain: {min: 0, max: 5, label: "WM Motor Gain"},
+    };
+
+    function renderTrait(trait, value) {
+        const meta = DNA_BOUNDS[trait] || {};
+        const label = meta.label || trait.replace(/_/g, ' ');
+        const isNum = typeof value === 'number' && Number.isFinite(value);
+        const isBool = meta.kind === 'bool' || typeof value === 'boolean';
+        const isChoice = meta.kind === 'choice';
+
+        let displayVal = String(value);
+        if (isNum) displayVal = value.toFixed(2);
+        else if (isBool) displayVal = value ? 'ON' : 'OFF';
+
+        let pct = 50;
+        if (isNum) {
+            const min = meta.min ?? 0;
+            const max = meta.max ?? Math.max(1, Math.abs(value));
+            const span = Math.max(1e-6, max - min);
+            pct = Math.max(0, Math.min(100, ((value - min) / span) * 100));
+        } else if (isBool) {
+            pct = value ? 100 : 0;
+        } else if (isChoice) {
+            pct = 50;
+        }
+
+        return `
+            <div>
+                <div class="flex justify-between text-[10px] mb-0.5">
+                    <span class="text-zinc-400 uppercase">${label}</span>
+                    <span class="text-zinc-300">${displayVal}</span>
+                </div>
+                <div class="h-1 bg-zinc-800 rounded overflow-hidden">
+                    <div class="h-full ${isBool ? 'bg-blue-500' : 'bg-orange-600'}" style="width: ${pct}%"></div>
+                </div>
+            </div>
+        `;
+    }
+
     function updateTournamentStats(rats) {
         const tbody = document.getElementById('tourney-leaderboard');
         const roundBadge = document.getElementById('tourney-round-badge');
         const dnaPanel = document.getElementById('tourney-dna-panel');
+        const dnaAllPanel = document.getElementById('tourney-dna-all');
         
         if (!tbody || !rats || rats.length === 0) return;
 
@@ -1127,21 +1217,32 @@
         // 4. Render Leader DNA
         if (leader.dna) {
             dnaPanel.innerHTML = '';
-            for (const [trait, value] of Object.entries(leader.dna)) {
-                // Normalize for visual bar (0.0 to 3.0 range approx)
-                const pct = Math.min(100, (value / 3.0) * 100);
-                dnaPanel.innerHTML += `
-                    <div>
-                        <div class="flex justify_between text-[10px] mb-0.5">
-                            <span class="text-zinc-400 uppercase">${trait.replace(/_/g, ' ')}</span>
-                            <span class="text-zinc-300">${value.toFixed(2)}</span>
-                        </div>
-                        <div class="h-1 bg-zinc-800 rounded overflow-hidden">
-                            <div class="h-full bg-orange-600" style="width: ${pct}%"></div>
-                        </div>
+            Object.entries(leader.dna).forEach(([trait, value]) => {
+                dnaPanel.innerHTML += renderTrait(trait, value);
+            });
+        }
+
+        // 5. Render all agents' DNA
+        if (dnaAllPanel) {
+            dnaAllPanel.innerHTML = '';
+            sortedRats.forEach(r => {
+                const header = `
+                    <div class="flex items-center justify-between mb-1">
+                        <span class="text-[10px] uppercase text-zinc-400">${r.label}</span>
+                        <span class="text-[10px] text-zinc-500">Score ${r.score}</span>
                     </div>
                 `;
-            }
+                let traitsHtml = '';
+                if (r.dna) {
+                    Object.entries(r.dna).forEach(([trait, value]) => {
+                        traitsHtml += renderTrait(trait, value);
+                    });
+                }
+                const card = document.createElement('div');
+                card.className = "p-2 rounded border border-zinc-800 bg-zinc-900/60";
+                card.innerHTML = header + `<div class="space-y-1">${traitsHtml}</div>`;
+                dnaAllPanel.appendChild(card);
+            });
         }
     }
 

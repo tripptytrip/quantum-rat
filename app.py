@@ -24,6 +24,7 @@ from brain.components.locus_coeruleus import LocusCoeruleusComponent
 from brain.components.basal_forebrain import BasalForebrainComponent
 from brain.components.sensory import VisionCortexComponent, SomatoCortexComponent
 from brain.components.basal_ganglia import BasalGangliaComponent
+from predator import Predator
 
 class CoherenceField(ABC):
     """
@@ -1992,44 +1993,7 @@ class DendriticCluster:
 
 from tournament import TournamentManager
 
-class Predator:
-    def __init__(self, pos):
-        self.pos = np.array(pos)
-        self.vel = np.array([0.0, 0.0])
-        # Slightly faster now to force the rat to be smart
-        self.speed = 0.24 
-
-    def hunt(self, rat_pos, rat_vel, grid, map_size, dt_scale: float = 1.0):
-        # 1. Calculate Intercept
-        dist = float(np.linalg.norm(rat_pos - self.pos))
-        
-        # Simple "Time to Impact" calculation
-        # If we are far, look further ahead. If close, look at the rat.
-        lookahead = clamp(dist / self.speed, 0.0, 15.0)
-        
-        # Predicted position of the rat (Target Leading)
-        predicted_pos = rat_pos + (rat_vel * lookahead)
-        
-        # 2. Vector Navigation
-        diff = predicted_pos - self.pos
-        dist_pred = np.linalg.norm(diff)
-        
-        if dist_pred > 0:
-            desired_vel = (diff / dist_pred) * (self.speed * dt_scale)
-            next_pos = self.pos + desired_vel
-            
-            # Simple Wall Collision Check
-            nx, ny = int(next_pos[0]), int(next_pos[1])
-            if 0 <= nx < map_size and 0 <= ny < map_size:
-                if grid[ny, nx] == 0:
-                    self.pos = next_pos
-                else:
-                    # Slide along wall
-                    if grid[ny, int(self.pos[0])] == 0:
-                        self.pos[1] = next_pos[1]
-                    elif grid[int(self.pos[1]), nx] == 0:
-                        self.pos[0] = next_pos[0]
-
+from predator import Predator
 
 class Cerebellum:
     def __init__(self):
@@ -2088,6 +2052,7 @@ class SimulationState:
             "dt": 0.05,  # master timestep (kept at legacy default)
             "seed": None,
             "deterministic": 0.0,
+            "dopamine_tonic": 0.2,    # baseline tonic dopamine
             # --- NEW KNOBS ---
             "cerebellum_gain": 1.0,  # 0.0 = Clumsy, 1.0 = Precise
             "memory_gain": 1.0,      # 0.0 = Pure Sensory, 1.0 = Balanced
@@ -2163,7 +2128,7 @@ class SimulationState:
 
         self.lab = ScientificTestBed(self)
         self.lab_reward_flag = False
-        self.tournament = TournamentManager(self.config, self.map_size)
+        self.tournament = TournamentManager(self, self.config, self.map_size)
 
         if not (float(self.config.get("deterministic", 0.0)) > 0.5):
             if not os.path.exists("evolution_log.csv"):
@@ -3326,41 +3291,43 @@ def step():
             tournament_rats = []
             leader = None
             living_rats = []
+            tournament_status = ""
 
             for i in range(iterations):
                 # Ensure arena has targets
                 if not sim.targets:
-                    sim.targets = [sim._spawn_single_target() for _ in range(3)]
+                    sim.targets = [sim._spawn_single_target() for _ in range(8)]
 
                 env_state = {
                     "grid": sim.occupancy_grid,
                     "targets": sim.targets,
-                    "predator": sim.predator.pos,
+                    "predators": [p.pos for p in sim.tournament.predators],
                 }
                 tournament_rats = sim.tournament.step(dt, env_state)
                 sim.frames_alive += 1
 
+                for predator in sim.tournament.predators:
+                    predator.patrol_wall(sim.map_size, dt_scale)
+
                 living_rats = [a for a in sim.tournament.agents if a.deaths == 0]
-                if living_rats:
-                    closest = min(living_rats, key=lambda a: np.linalg.norm(a.pos - sim.predator.pos))
-                    sim.predator.hunt(closest.pos, closest.vel, sim.occupancy_grid, sim.map_size, dt_scale)
 
                 if sim.frames_alive > 2000 or not living_rats:
                     finished = sim.tournament.end_round()
                     sim.frames_alive = 0
                     # Reset trails/targets each round
-                    sim.targets = [sim._spawn_single_target() for _ in range(3)]
+                    sim.tournament._create_quartered_map_and_food()
                     sim.pheromones = []
-                    if hasattr(sim, "predator"):
-                        sim.predator.pos = np.array([float(sim.map_size - 5), 3.0])
                     if finished:
                         print("TOURNAMENT COMPLETE")
+                        tournament_status = "COMPLETE"
+                    else:
+                        tournament_status = ""
 
             if sim.tournament.agents:
                 leader = max(sim.tournament.agents, key=lambda a: a.score)
                 if living_rats:
                     leader = max(living_rats, key=lambda a: a.score)
-
+            
             # Populate viz from leader or fall back to placeholders
             leader_data = leader.brain_data if leader else {}
             soma_density = np.array(leader_data.get("soma", soma_density))
@@ -3434,12 +3401,13 @@ def step():
                     "rat": leader_pos,
                     "tournament_rats": tournament_rats,
                     "targets": [t.tolist() for t in sim.targets],
-                    "predator": sim.predator.pos.tolist(),
+                    "predators": [p.pos.tolist() for p in sim.tournament.predators],
                     "brain": brain_payload,
                     "stats": stats_payload,
                     "pheromones": sim.pheromones,
                     "whiskers": {"angle": leader_whisk, "hits": leader_hits},
                     "vision": leader_vision,
+                    "tournament_status": tournament_status,
                 }
             )
 
@@ -4238,6 +4206,8 @@ def config():
             sim.config["memory_gain"] = clamp(float(payload["memory_gain"]), 0.0, 5.0)
         if "fear_gain" in payload:
             sim.config["fear_gain"] = clamp(float(payload["fear_gain"]), 0.0, 10.0)
+        if "dopamine_tonic" in payload:
+            sim.config["dopamine_tonic"] = clamp(float(payload["dopamine_tonic"]), -0.3, 0.8)
         if "energy_constraint" in payload:
             sim.config["energy_constraint"] = clamp(float(payload["energy_constraint"]), 0.0, 1.0)
 
