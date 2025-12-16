@@ -1,12 +1,15 @@
 
 import os
 import json
-from flask import Flask, jsonify, request, send_from_directory
-from pathlib import Path
+from flask import Flask, jsonify, request, send_from_directory, redirect, url_for
 
 from ui.replay_index import get_safe_path, read_jsonl_paged, get_run_root
 
 app = Flask(__name__, static_folder="static")
+
+@app.route('/')
+def index():
+    return redirect(url_for('replay_ui'))
 
 @app.route('/replay')
 def replay_ui():
